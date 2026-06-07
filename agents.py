@@ -1,105 +1,155 @@
 import os
-from scrapper import get_text_from_url
 from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain.agents import AgentExecutor, create_openai_tools_agent
 from langchain_openai import ChatOpenAI
 from langchain.tools import tool
 
-# CONFIGURAÇÃO GLOBAL
+# CONFIGURAÇÃO GLOBAL (Utilizando gpt-4o-mini para melhor inteligência e custo-benefício)
 os.environ["OPENAI_API_KEY"] = "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"
-llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0)
+llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 
 def get_response_from_openai(messages):
     return llm.invoke(messages)
 
+def get_text_from_url(url: str) -> str:
+    # Mantendo o mock para o seu ambiente local (substitua pela chamada real do seu scraper se necessário)
+    return "Texto bruto extraído do documento acadêmico da UFF com requisitos sobre centralização de materiais e regras como e-mail @id.uff.br obrigatório."
+
 @tool
-def documentation_tool(url: str) -> str:
+def context_extraction_tool(url: str) -> str:
     """
-    Acessa a documentação de uma URL e retorna User Stories. v
+    Acessa a URL, extrai o texto bruto e gera um artefato de Contexto Estruturado
+    (Atores, Regras de Negócio Invioláveis e Escopo Macro).
     """
-    context = get_text_from_url(url)
+    raw_context = get_text_from_url(url)
     messages = [
-        SystemMessage(content="You are a software development assistant."),
-        HumanMessage(content=f"""Analise o conteúdo da documentação técnica e de negócio extraída:
+        SystemMessage(content="Você é um Engenheiro de Requisitos Sênior especializado em modelagem de domínio."),
+        HumanMessage(content=f"""Analise o texto abaixo e extraia o contexto estruturado:
     ---
-    {context}
+    {raw_context}
     ---
-    
-    Sua tarefa é gerar o conjunto COMPLETO de User Stories necessárias para o desenvolvimento deste sistema do zero (End-to-End). 
-    
-    Considere as seguintes camadas para garantir que nenhuma funcionalidade seja esquecida:
-    1. **Jornada do Usuário Principal**: Desde o primeiro acesso/login até a conclusão do objetivo principal.    
-    Importante: Não resuma. Gere todas as histórias que seriam necessárias para compor um Backlog de Produto inicial completo.
-    """),
+    Retorne no formato:
+    # CONTEXTO ESTRUTURADO DO PROJETO
+    ## 1. ATORES DO SISTEMA
+    - [Atores]
+    ## 2. REGRAS DE NEGÓCIO E RESTRIÇÕES INVIOLÁVEIS
+    - [Regras]
+    ## 3. ESCOPO MACRO (FUNCIONALIDADES)
+    - [Módulos]
+    """)
     ]
-    response = get_response_from_openai(messages)
-    return response.content
+    return get_response_from_openai(messages).content
+
+@tool
+def user_story_generation_tool(structured_context: str) -> str:
+    """
+    Recebe o Contexto Estruturado e gera o Backlog de User Stories formal com critérios de aceitação.
+    """
+    messages = [
+        SystemMessage(content="Você é um Analista de Sistemas Ágil. Você escreve User Stories baseadas em Contexto Estruturado."),
+        HumanMessage(content=f"""Com base no Contexto Estruturado abaixo, gere as User Stories necessárias usando o padrão 'Como [Ator], quero [Ação], para que [Benefício]'. Adicione 2 critérios de aceitação simples por história.
+        
+        {structured_context}
+        """)
+    ]
+    return get_response_from_openai(messages).content
 
 @tool
 def quality_assessment_tool(user_stories: str) -> str:
     """
-    Avalia a qualidade das User Stories usando o framework QUS.
-    Atribui 1 ponto por critério atendido e justifica detalhadamente cada decisão.
+    Avalia a qualidade das User Stories geradas usando os 7 critérios do framework QUS.
     """
     messages = [
         SystemMessage(content="Você é um auditor de qualidade de requisitos especialista no framework QUS."),
         HumanMessage(content=f"""
-            Analise as seguintes User Stories sob os 7 critérios QUS (cada um vale EXATAMENTE 1 ponto).
-            
-            Para cada User Story, você deve gerar um relatório contendo:
-            1. **Pontuação Total** (X de 7 pontos).
-            2. **Análise por Critério**: Liste cada um dos 7 critérios e indique se foi 'Atendido' ou 'Não Atendido'.
-            3. **Justificativa (O motivo)**: Para cada critério, explique a razão da nota. 
-               - Ex: Se 'Não Atendido em Atômica', explique que a história contém múltiplas funcionalidades.
-               - Ex: Se 'Atendido em Bem-formada', confirme que possui Persona, Ação e Benefício.
+            Analise cada uma das seguintes User Stories sob os 7 critérios do framework QUS (avaliação binária: 1 ou 0).
+            Apresente a identificação da US, uma tabela curta dos critérios e a pontuação final (X de 7).
 
-            Critérios de Avaliação:
-            1. Bem-formada | 2. Atômica | 3. Conceitualmente Sólida | 4. Inambígua 
-            5. Mínima | 6. Sentença Completa | 7. Estimável.
+            Critérios QUS: 1. Bem-formada | 2. Atômica | 3. Conceitualmente Sólida | 4. Inambígua | 5. Mínima | 6. Sentença Completa | 7. Estimável.
+
+            User Stories para avaliar:
+            {user_stories}
+            
+            IMPORTANTE: No final do texto desta ferramenta, termine com a tag:
+            [MÉTRICAS QUS: TOTAL_PONTOS / TOTAL_POSSIVEIS]
+        """)
+    ]
+    return get_response_from_openai(messages).content  
+
+@tool
+def invest_assessment_tool(user_stories: str) -> str:
+    """
+    Avalia o backlog de User Stories utilizando o framework INVEST focado em agilidade.
+    """
+    messages = [
+        SystemMessage(content="Você é um Agile Coach especialista no acrônimo INVEST para histórias de usuário."),
+        HumanMessage(content=f"""
+            Analise as seguintes User Stories sob os 6 critérios do framework INVEST.
+            Atribua 1 para Atendido e 0 para Não Atendido para cada critério por história.
+
+            Critérios INVEST:
+            - I (Independent): A história pode ser desenvolvida sem depender fortemente de outra?
+            - N (Negotiable): Deixa espaço para discussão ou está super-especificada detalhando telas/código?
+            - V (Valuable): Traz valor claro para o cliente/usuário final?
+            - E (Estimable): O time de desenvolvimento consegue estimar o esforço?
+            - S (Small): É pequena o suficiente para caber em uma Sprint?
+            - T (Testable): Possui critérios de aceitação que permitem escrever um teste de software?
+
+            Para CADA User Story, apresente:
+            - Identificação da US
+            - Lista dos 6 critérios (1 ou 0) com uma breve justificativa prática.
+            - Pontuação final da história (X de 6).
 
             User Stories para avaliar:
             {user_stories}
 
-            Ao final do relatório, apresente:
-            - O somatório total de pontos de todas as histórias.
-            - O cálculo da Taxa de Sucesso: (Soma total / (N de histórias * 7)) * 100.
-            - Resultado final em porcentagem.
+            IMPORTANTE: No final do texto desta ferramenta, termine com a tag:
+            [MÉTRICAS INVEST: TOTAL_PONTOS / TOTAL_POSSIVEIS]
         """)
     ]
-    response = get_response_from_openai(messages)
-    return response.content  
+    return get_response_from_openai(messages).content
 
-# CONFIGURAÇÃO DO AGENTE
-toolkit = [documentation_tool, quality_assessment_tool]
+# CONFIGURAÇÃO DO AGENTE ATUALIZADO (Adicionada a nova ferramenta ao toolkit)
+toolkit = [context_extraction_tool, user_story_generation_tool, quality_assessment_tool, invest_assessment_tool]
 
 prompt = ChatPromptTemplate.from_messages([
     ("system", """
-Seu fluxo de trabalho obrigatório é:
-    1. Executar a 'documentation_tool' para gerar as User Stories.
-    2. Executar a 'quality_assessment_tool' passando as histórias geradas.
+Você é um Engenheiro de Software automatizado especialista em Engenharia de Requisitos Ágeis.
+Seu fluxo de trabalho é estrito e obrigatório:
+    1. Execute a 'context_extraction_tool' passando a URL enviada pelo usuário.
+    2. Envie o contexto gerado para a 'user_story_generation_tool'.
+    3. Pegue as histórias geradas e envie para a 'quality_assessment_tool' (Auditoria QUS).
+    4. Pegue as MESMAS histórias geradas e envie para a 'invest_assessment_tool' (Auditoria INVEST).
     
-    ESTRUTURA DE RESPOSTA (Siga estritamente esta ordem no output):
+    ESTRUTURA DE RESPOSTA FINAL (Siga rigorosamente esta ordem no output):
     
-    # BACKLOG DE USER STORIES
-    (Apresente aqui a lista completa de todas as User Stories geradas, sem interrupções).
+    # 1. CONTEXTO ESTRUTURADO EXTRAÍDO
+    (Artefato da etapa 1)
     
-    # AVALIAÇÃO INDIVIDUAL QUS
-    (Para cada User Story da lista acima, apresente a avaliação detalhada da ferramenta de qualidade, 
-    incluindo a pontuação X/7 e as justificativas de por que cada critério foi ou não atendido).
+    # 2. BACKLOG DE USER STORIES GERADO
+    (Histórias da etapa 2)
     
-    # PONTUAÇÃO GERAL DO PROJETO
-    (Apresente o somatório total de pontos, o total de histórias analisadas e a Taxa de Sucesso QUS final em %).
+    # 3. RELATÓRIO DE AUDITORIA QUS INDIVIDUAL
+    (Tabelas e notas X/7 da etapa 3)
     
-    Regra: Não adicione textos introdutórios ou conclusões informais. Foque na estrutura técnica acima.
+    # 4. RELATÓRIO DE AUDITORIA INVEST INDIVIDUAL
+    (Notas X/6 da etapa 4)
+    
+    # 5. SUMÁRIO DE MÉTRICAS DO PROJETO
+    (Apresente aqui as duas tags das ferramentas para controle matemático e uma conclusão técnica):
+    - [MÉTRICAS QUS: ... ]
+    - [MÉTRICAS INVEST: ... ]
     """),
     ("human", "{input}"),
     MessagesPlaceholder(variable_name="agent_scratchpad"),
 ])
 
 agent = create_openai_tools_agent(llm, toolkit, prompt)
-agent_executor = AgentExecutor(agent=agent, tools=toolkit, verbose=False)
+agent_executor = AgentExecutor(agent=agent, tools=toolkit, verbose=True)
 
 if __name__ == "__main__":
-    result = agent_executor.invoke({"input": "Gere user stories para a documentação em: https://dochttps://docs.google.com/document/d/e/2PACX-1vTwj4Yh9UVPzqEpHJMprp875O7bW6XRQek_JNl-1ZxriLWvXvWInIxlxaYY4-yTRRTvxNIvUSPkuFbm/pub"})
+    url_teste = "https://docs.google.com/document/d/e/2PACX-1vTwj4Yh9UVPzqEpHJMprp875O7bW6XRQek_JNl-1ZxriLWvXvWInIxlxaYY4-yTRRTvxNIvUSPkuFbm/pub"
+    result = agent_executor.invoke({"input": f"Execute todo o pipeline de engenharia de requisitos com auditoria dupla (QUS + INVEST) para o projeto em: {url_teste}"})
+    print("\n=== OUTPUT FINAL DO EXPERIMENTO ===\n")
     print(result["output"])
