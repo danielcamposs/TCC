@@ -154,4 +154,4 @@ if __name__ == "__main__":
     url_teste = "https://docs.google.com/document/d/e/2PACX-1vTwj4Yh9UVPzqEpHJMprp875O7bW6XRQek_JNl-1ZxriLWvXvWInIxlxaYY4-yTRRTvxNIvUSPkuFbm/pub"
     result = agent_executor.invoke({"input": f"Execute todo o pipeline de engenharia de requisitos com auditoria dupla (QUS + INVEST) para o projeto em: {url_teste}"})
     print("\n=== OUTPUT FINAL DO EXPERIMENTO ===\n")
-    print(result["output"])66
+    print(result["output"])
