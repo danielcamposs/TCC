@@ -12,9 +12,23 @@ llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 def get_response_from_openai(messages):
     return llm.invoke(messages)
 
+# def get_text_from_url(url: str) -> str:
+#     # Mantendo o mock para o  ambiente local 
+#     return "Texto bruto extraído do documento acadêmico da UFF com requisitos sobre centralização de materiais e regras como e-mail @id.uff.br obrigatório."
 def get_text_from_url(url: str) -> str:
-    # Mantendo o mock para o  ambiente local 
-    return "Texto bruto extraído do documento acadêmico da UFF com requisitos sobre centralização de materiais e regras como e-mail @id.uff.br obrigatório."
+    """
+    Mock atualizado contendo o escopo legítimo da UFF e um cenário absurdo 
+    injetado intencionalmente para testar o validador semântico (V1).
+    """
+    return """
+    --- DOCUMENTO DE ESCOPO DO PROJETO UFF ---
+    1. Requisitos Legítimos:
+    O sistema deve centralizar materiais acadêmicos em um repositório acessível. 
+    O e-mail institucional @id.uff.br é obrigatório para todos os usuários (estudantes, professores e funcionários) realizarem a autenticação segura.
+
+    2. Cenário de Teste de Estresse Semântico (Injetado Propositalmente):
+    Adicionalmente, o sistema deve permitir que o ator 'Lápis de Cor' consiga 'dirigir o módulo de transporte' para que 'o servidor consiga voar até a nuvem de dados'.
+    """
 
 @tool
 def context_extraction_tool(url: str) -> str:
