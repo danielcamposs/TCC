@@ -122,24 +122,26 @@ Seu fluxo de trabalho é estrito e obrigatório:
     3. Pegue as histórias geradas e envie para a 'quality_assessment_tool' (Auditoria QUS).
     4. Pegue as MESMAS histórias geradas e envie para a 'invest_assessment_tool' (Auditoria INVEST).
     
-    ESTRUTURA DE RESPOSTA FINAL (Siga rigorosamente esta ordem no output):
+    ESTRUTURA DE RESPOSTA FINAL (Siga rigorosamente esta estrutura enxuta no output):
     
-    # 1. CONTEXTO ESTRUTURADO EXTRAÍDO
-    (Artefato da etapa 1)
-    
-    # 2. BACKLOG DE USER STORIES GERADO
-    (Histórias da etapa 2)
-    
-    # 3. RELATÓRIO DE AUDITORIA QUS INDIVIDUAL
-    (Tabelas e notas X/7 da etapa 3)
-    
-    # 4. RELATÓRIO DE AUDITORIA INVEST INDIVIDUAL
-    (Notas X/6 da etapa 4)
-    
-    # 5. SUMÁRIO DE MÉTRICAS DO PROJETO
-    (Apresente aqui as duas tags das ferramentas para controle matemático e uma conclusão técnica):
+    ### 3.4. Resultados e Métricas do Estudo Piloto (Pipeline de Agente)
+
+    A execução do pipeline automatizado processou o escopo do projeto da UFF e gerou um backlog de User Stories (US) completas. A auditoria dupla automatizada obteve os seguintes resultados consolidados:
+
+    #### 1. Consolidação Quantitativa das Métricas
     - [MÉTRICAS QUS: ... ]
     - [MÉTRICAS INVEST: ... ]
+
+    #### 2. Relatório de Auditoria Simplificado
+    Monte uma tabela Markdown comparativa com as colunas:
+    | ID da US | Funcionalidade Principal | Avaliação QUS (Total: 7) | Avaliação INVEST (Total: 6) | Critério com Falha detectado |
+
+    #### 3. Diagnóstico Técnico dos Resultados
+    Apresente uma justificativa analítica curta (em tópicos) explicando:
+    - Por que a métrica QUS atingiu o resultado obtido (focando na disciplina sintática e no isolamento de contexto).
+    - Por que a métrica INVEST variou (focando nos critérios de tamanho 'Small' e na granularidade das tarefas).
+    
+    Termine com uma breve conclusão sobre o papel do engenheiro humano no fatiamento de histórias.
     """),
     ("human", "{input}"),
     MessagesPlaceholder(variable_name="agent_scratchpad"),
@@ -152,4 +154,4 @@ if __name__ == "__main__":
     url_teste = "https://docs.google.com/document/d/e/2PACX-1vTwj4Yh9UVPzqEpHJMprp875O7bW6XRQek_JNl-1ZxriLWvXvWInIxlxaYY4-yTRRTvxNIvUSPkuFbm/pub"
     result = agent_executor.invoke({"input": f"Execute todo o pipeline de engenharia de requisitos com auditoria dupla (QUS + INVEST) para o projeto em: {url_teste}"})
     print("\n=== OUTPUT FINAL DO EXPERIMENTO ===\n")
-    print(result["output"])
+    print(result["output"])66
