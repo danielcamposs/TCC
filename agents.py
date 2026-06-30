@@ -1,9 +1,12 @@
 import os
+import time
+import tracemalloc
 from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain.agents import AgentExecutor, create_openai_tools_agent
 from langchain_openai import ChatOpenAI
 from langchain.tools import tool
+from langchain_community.callbacks.manager import get_openai_callback
 
 # CONFIGURAÇÃO GLOBAL (Utilizando gpt-4o-mini para melhor inteligência e custo-benefício)
 os.environ["OPENAI_API_KEY"] = "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"
@@ -13,7 +16,7 @@ def get_response_from_openai(messages):
     return llm.invoke(messages)
 
 def get_text_from_url(url: str) -> str:
-    # Mantendo o mock para o seu ambiente local (substitua pela chamada real do seu scraper se necessário)
+    # Mantendo o mock para o seu ambiente local
     return "Texto bruto extraído do documento acadêmico da UFF com requisitos sobre centralização de materiais e regras como e-mail @id.uff.br obrigatório."
 
 @tool
@@ -45,10 +48,11 @@ def context_extraction_tool(url: str) -> str:
 def user_story_generation_tool(structured_context: str) -> str:
     """
     Recebe o Contexto Estruturado e gera o Backlog de User Stories formal com critérios de aceitação.
+    Garante que cada história seja pequena e atômica.
     """
     messages = [
         SystemMessage(content="Você é um Analista de Sistemas Ágil. Você escreve User Stories baseadas em Contexto Estruturado."),
-        HumanMessage(content=f"""Com base no Contexto Estruturado abaixo, gere as User Stories necessárias usando o padrão 'Como [Ator], quero [Ação], para que [Benefício]'. Adicione 2 critérios de aceitação simples por história.
+        HumanMessage(content=f"""Com base no Contexto Estruturado abaixo, gere as User Stories necessárias usando o padrão 'Como [Ator], quero [Ação], para que [Benefício]'. Adicione 2 critérios de aceitação simples por história. Garantir que cada história seja pequena o suficiente para caber em uma Sprint.
         
         {structured_context}
         """)
@@ -92,7 +96,7 @@ def invest_assessment_tool(user_stories: str) -> str:
             - I (Independent): A história pode ser desenvolvida sem depender fortemente de outra?
             - N (Negotiable): Deixa espaço para discussão ou está super-especificada detalhando telas/código?
             - V (Valuable): Traz valor claro para o cliente/usuário final?
-            - E (Estimable): O time de desenvolvimento consegue estimar o esforço?
+            - E (Estimable): O time de desenvolvimento consegue estimar o espaço?
             - S (Small): É pequena o suficiente para caber em uma Sprint?
             - T (Testable): Possui critérios de aceitação que permitem escrever um teste de software?
 
@@ -110,7 +114,7 @@ def invest_assessment_tool(user_stories: str) -> str:
     ]
     return get_response_from_openai(messages).content
 
-# CONFIGURAÇÃO DO AGENTE ATUALIZADO (Adicionada a nova ferramenta ao toolkit)
+# CONFIGURAÇÃO DO AGENTE
 toolkit = [context_extraction_tool, user_story_generation_tool, quality_assessment_tool, invest_assessment_tool]
 
 prompt = ChatPromptTemplate.from_messages([
@@ -137,7 +141,7 @@ Seu fluxo de trabalho é estrito e obrigatório:
     | ID da US | Funcionalidade Principal | Avaliação QUS (Total: 7) | Avaliação INVEST (Total: 6) | Critério com Falha detectado |
 
     #### 3. Diagnóstico Técnico dos Resultados
-    Apresente uma justificativa analítica curta (em tópicos) explicando:
+    Apresente uma justificativa analítica corta (em tópicos) explicando:
     - Por que a métrica QUS atingiu o resultado obtido (focando na disciplina sintática e no isolamento de contexto).
     - Por que a métrica INVEST variou (focando nos critérios de tamanho 'Small' e na granularidade das tarefas).
     
@@ -152,6 +156,41 @@ agent_executor = AgentExecutor(agent=agent, tools=toolkit, verbose=True)
 
 if __name__ == "__main__":
     url_teste = "https://docs.google.com/document/d/e/2PACX-1vTwj4Yh9UVPzqEpHJMprp875O7bW6XRQek_JNl-1ZxriLWvXvWInIxlxaYY4-yTRRTvxNIvUSPkuFbm/pub"
-    result = agent_executor.invoke({"input": f"Execute todo o pipeline de engenharia de requisitos com auditoria dupla (QUS + INVEST) para o projeto em: {url_teste}"})
-    print("\n=== OUTPUT FINAL DO EXPERIMENTO ===\n")
-    print(result["output"])
+    
+    # 1. Inicia o monitoramento de Hardware (Memória e Tempo)
+    tracemalloc.start()
+    tempo_inicial = time.time()
+    
+    # 2. Inicia o monitoramento da API da OpenAI (Tokens)
+    with get_openai_callback() as cb:
+        
+        # Execução do Pipeline do Agente
+        result = agent_executor.invoke({
+            "input": f"Execute todo o pipeline de engenharia de requisitos com auditoria dupla (QUS + INVEST) para o projeto em: {url_teste}"
+        })
+        
+        # Finaliza a medição de tempo e hardware logo após a execução do agente
+        tempo_final = time.time()
+        memoria_atual, memoria_pico = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+        
+        # 3. Cálculo matemático manual do custo real do gpt-4o-mini
+        # Preço por token: Entrada = $0.15 / 1.000.000 | Saída = $0.60 / 1.000.000
+        custo_entrada = (cb.prompt_tokens / 1000000) * 0.15
+        custo_saida = (cb.completion_tokens / 1000000) * 0.60
+        custo_real_calculado = custo_entrada + custo_saida
+        
+        # --- PRINTS DOS RESULTADOS ---
+        print("\n=== OUTPUT FINAL DO EXPERIMENTO ===\n")
+        print(result["output"])
+        
+        print("\n=== MÉTRICAS DE DESEMPENHO DA MÁQUINA (LOCAL) ===")
+        print(f"Tempo total de execução: {tempo_final - tempo_inicial:.2f} segundos")
+        print(f"Consumo de Memória RAM de Pico: {memoria_pico / (1024 * 1024):.2f} MB")
+        
+        print("\n=== MÉTRICAS DE CONSUMO DA API (NUVEM - OPENAI) ===")
+        print(f"Total de Tokens Usados: {cb.total_tokens}")
+        print(f"Tokens de Entrada (Prompt): {cb.prompt_tokens}")
+        print(f"Tokens de Saída (Completion): {cb.completion_tokens}")
+        print(f"Custo Total Estimado (Nativo LangChain): ${cb.total_cost:.5f} USD")
+        print(f"Custo Total Real (Calculado gpt-4o-mini): ${custo_real_calculado:.6f} USD")
