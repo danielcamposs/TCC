@@ -33,16 +33,17 @@ from langchain_community.vectorstores import FAISS
 from langchain_openai import OpenAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-VECTOR_STORE = None
+# O Streamlit reexecuta o script inteiro a cada clique: a base vetorial e os resultados ficam
+# em st.session_state para sobreviver aos reruns (ex.: clique no botão de refinamento).
+VECTOR_STORE = st.session_state.get("vector_store")
 
 # Resultados produzidos pelas ferramentas na execução atual.
 # As ferramentas de verificação/avaliação e a interface leem daqui, em vez de depender
 # do agente repassar (e muitas vezes resumir ou truncar) textos longos.
-RESULTADOS = {}
+RESULTADOS = st.session_state.setdefault("resultados", {})
 
-def novo_estado_execucao():
-    RESULTADOS.clear()
-    RESULTADOS.update({
+def estado_inicial() -> dict:
+    return {
         "analise_normativa": "",
         "historias": [],
         "lacunas": [],
@@ -50,9 +51,18 @@ def novo_estado_execucao():
         "cobertura": "",
         "qus": "",
         "invest": "",
-    })
+        "refinamentos": [],
+        # None = avaliar o backlog completo; lista = modo refinamento, reavaliar só essas histórias
+        "ids_reavaliar": None,
+    }
 
-novo_estado_execucao()
+def novo_estado_execucao():
+    RESULTADOS.clear()
+    RESULTADOS.update(estado_inicial())
+
+# Mantém os resultados de reruns anteriores; só completa as chaves ausentes
+for chave, valor in estado_inicial().items():
+    RESULTADOS.setdefault(chave, valor)
 
 def backlog_completo() -> str:
     return "\n\n".join(RESULTADOS["historias"])
@@ -63,6 +73,60 @@ def normalizar_id_us(texto: str) -> str:
 def ids_no_backlog() -> list:
     ids = {normalizar_id_us(m) for m in re.findall(r'US-?\s*\d+', backlog_completo(), re.IGNORECASE)}
     return sorted(ids, key=lambda s: int(s.split("-")[1]))
+
+PADRAO_MODULO = re.compile(r'^\s*#+\s*Módulo\s*:?\s*(.+)$', re.IGNORECASE)
+PADRAO_TITULO_US = re.compile(r'^\W*(US-?\s*\d+)\s*[-–—:]\s*(.+)$', re.IGNORECASE)
+
+def segmentar_backlog(texto: str) -> list:
+    """Divide o texto do backlog em segmentos [ID, texto], na ordem original.
+    Títulos de módulo e textos soltos ficam em segmentos com ID None."""
+    segmentos = []
+    for linha in texto.splitlines():
+        m_us = PADRAO_TITULO_US.match(linha)
+        if m_us:
+            segmentos.append([normalizar_id_us(m_us.group(1)), [linha]])
+        elif PADRAO_MODULO.match(linha) or not segmentos:
+            segmentos.append([None, [linha]])
+        else:
+            segmentos[-1][1].append(linha)
+    segmentos = [[id_us, "\n".join(linhas).strip()] for id_us, linhas in segmentos]
+    return [s for s in segmentos if s[1]]
+
+def historias_por_id(texto: str) -> dict:
+    """{US-001: texto da história}; em IDs repetidos vale a primeira ocorrência."""
+    historias = {}
+    for id_us, bloco in segmentar_backlog(texto):
+        if id_us:
+            historias.setdefault(id_us, bloco)
+    return historias
+
+def _sem_espacos(texto: str) -> str:
+    return " ".join(texto.split())
+
+def formatar_historias(texto: str) -> str:
+    """Garante uma parte da história por linha: título, Como, quero, para que, Critérios de Aceitação e cada CA.
+    O LLM às vezes devolve o título e a história (ou vários CAs) na mesma linha."""
+    linhas = []
+    for linha in texto.splitlines():
+        # Título e "Como ..." na mesma linha
+        linha = re.sub(r'^(\W*US-?\s*\d+\s*[-–—:].*?\S)\s+(\**Como\s)', r'\1\n\2', linha, flags=re.IGNORECASE)
+        # "... para que X. Critérios de Aceitação: - CA1: ... - CA2: ..."
+        linha = re.sub(r'(?<=\S)\s+(\**Critérios de Aceitação\**\s*:)', r'\n\n\1', linha, flags=re.IGNORECASE)
+        linha = re.sub(r'(Aceitação\s*:\**)\s+(-?\s*\**CA\s*\d+)', r'\1\n\2', linha, flags=re.IGNORECASE)
+        linha = re.sub(r'(?<=[.)])\s+(-?\s*\**CA\s*\d+\s*\**\s*:)', r'\n\1', linha, flags=re.IGNORECASE)
+        partes = []
+        for parte in linha.split("\n"):
+            # "Como ..., quero ..., para que ..." em uma linha só (só na linha do "Como", nunca nos CAs)
+            if re.match(r'^\W*Como\s', parte, re.IGNORECASE):
+                parte = re.sub(r',\s*(\**quero\s)', r',\n\1', parte, flags=re.IGNORECASE)
+                parte = re.sub(r',\s*(\**para que\s)', r',\n\1', parte, flags=re.IGNORECASE)
+            partes.append(parte)
+        linhas.append("\n".join(partes))
+    return "\n".join(linhas)
+
+def markdown_com_quebras(texto: str) -> str:
+    """No Markdown, uma quebra simples vira espaço: força a quebra para cada parte ficar na própria linha."""
+    return re.sub(r'(?<=\S)\n(?=\S)', '  \n', texto)
 
 # Configuração da página do Streamlit
 st.set_page_config(
@@ -208,22 +272,80 @@ def montar_secao_metricas() -> str:
         )
     return "\n".join(linhas)
 
+def _formatar_total(notas: dict, maximo: int) -> str:
+    if not notas:
+        return "Não avaliado"
+    total, limite = sum(nota for nota, _ in notas.values()), len(notas) * maximo
+    return f"{total} / {limite} ({100 * total / limite:.1f}%)"
+
+def totais_qus_invest() -> tuple:
+    """Totais atuais do backlog, ex.: ('40 / 49 (81.6%)', '35 / 42 (83.3%)')."""
+    return (
+        _formatar_total(extrair_notas(RESULTADOS["qus"], 7), 7),
+        _formatar_total(extrair_notas(RESULTADOS["invest"], 6), 6),
+    )
+
+def calcular_custo(cb) -> float:
+    # Preços do gpt-4o-mini por 1M de tokens: US$ 0,15 (entrada) e US$ 0,60 (saída)
+    return (cb.prompt_tokens / 1000000) * 0.15 + (cb.completion_tokens / 1000000) * 0.60
+
+def descrever_alteracoes(registro: dict) -> str:
+    return (
+        f"Alteradas: {', '.join(registro['alterados']) or 'nenhuma'} · "
+        f"Criadas: {', '.join(registro['criados']) or 'nenhuma'} · "
+        f"Removidas: {', '.join(registro['removidos']) or 'nenhuma'}"
+    )
+
+COLUNAS_REFINAMENTO = [
+    "ID Execução", "Data/hora", "Instrução", "Histórias antes", "Histórias depois",
+    "Alteradas", "Criadas", "Removidas", "QUS antes", "QUS depois", "INVEST antes", "INVEST depois",
+    "Temperatura", "Tokens de entrada", "Tokens de saída", "Custo estimado (USD)", "Tempo (s)",
+    "Backlog revisado (texto completo)",
+]
+
+def linha_refinamento(registro: dict, id_execucao: str) -> list:
+    """Uma linha da aba Refinamentos (Google Sheets e .xlsx), na ordem de COLUNAS_REFINAMENTO."""
+    custo, tempo = registro.get("custo_usd"), registro.get("tempo_s")
+    return [
+        id_execucao,
+        registro["data_hora"],
+        registro["instrucao"],
+        registro.get("historias_antes"),
+        registro.get("historias_depois"),
+        ", ".join(registro["alterados"]),
+        ", ".join(registro["criados"]),
+        ", ".join(registro["removidos"]),
+        registro.get("qus_antes"),
+        registro.get("qus_depois"),
+        registro.get("invest_antes"),
+        registro.get("invest_depois"),
+        registro.get("temperatura"),
+        registro.get("tokens_entrada"),
+        registro.get("tokens_saida"),
+        round(custo, 5) if custo is not None else None,
+        round(tempo, 2) if tempo is not None else None,
+        registro["depois"],
+    ]
+
+def tabela_refinamentos(id_execucao: str) -> pd.DataFrame:
+    return pd.DataFrame(
+        [linha_refinamento(r, id_execucao) for r in RESULTADOS["refinamentos"]],
+        columns=COLUNAS_REFINAMENTO,
+    )
+
 # --- EXPORTAÇÃO PARA EXCEL ---
 def _limpar_markdown(texto: str) -> str:
     return re.sub(r'[*_`#]+', '', texto).strip().rstrip(',').strip()
 
 def estruturar_backlog() -> list:
     """Converte o texto do backlog em linhas (módulo, ID, título, como, quero, para que, critérios)."""
-    padrao_modulo = re.compile(r'^\s*#+\s*Módulo\s*:?\s*(.+)$', re.IGNORECASE)
-    padrao_us = re.compile(r'^\W*(US-?\s*\d+)\s*[-–—:]\s*(.+)$', re.IGNORECASE)
-
     linhas_saida = []
     modulo_atual = ""
     atual = None
 
     for linha in backlog_completo().splitlines():
-        m_mod = padrao_modulo.match(linha)
-        m_us = padrao_us.match(linha)
+        m_mod = PADRAO_MODULO.match(linha)
+        m_us = PADRAO_TITULO_US.match(linha)
         if m_mod:
             modulo_atual = _limpar_markdown(m_mod.group(1))
         elif m_us:
@@ -314,16 +436,26 @@ def montar_tabelas_resultado(info_execucao: dict):
 def gerar_xlsx(info_execucao: dict) -> bytes:
     """Gera a planilha com o backlog RAG ancorado, as métricas QUS/INVEST e a consolidação."""
     df_backlog, df_metricas, df_consolidacao = montar_tabelas_resultado(info_execucao)
+    # O texto completo do backlog fica de fora: o Excel limita a célula a 32.767 caracteres
+    # e a versão atual já está na aba Backlog RAG
+    df_refinamentos = tabela_refinamentos(info_execucao.get("id_execucao", "")).drop(
+        columns=["Backlog revisado (texto completo)"]
+    )
 
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         df_backlog.to_excel(writer, sheet_name="Backlog RAG", index=False)
         df_metricas.to_excel(writer, sheet_name="Métricas QUS-INVEST", index=False)
         df_consolidacao.to_excel(writer, sheet_name="Consolidação", index=False)
+        df_refinamentos.to_excel(writer, sheet_name="Refinamentos", index=False)
 
         _formatar_aba(writer.sheets["Backlog RAG"], {"A": 28, "B": 10, "C": 38, "D": 28, "E": 50, "F": 50, "G": 90})
         _formatar_aba(writer.sheets["Métricas QUS-INVEST"], {"A": 10, "B": 15, "C": 35, "D": 17, "E": 35})
         _formatar_aba(writer.sheets["Consolidação"], {"A": 38, "B": 70})
+        _formatar_aba(writer.sheets["Refinamentos"], {
+            "A": 20, "B": 16, "C": 60, "D": 10, "E": 10, "F": 22, "G": 22, "H": 22,
+            "I": 20, "J": 20, "K": 20, "L": 20, "M": 12, "N": 12, "O": 12, "P": 14, "Q": 10,
+        })
     return buffer.getvalue()
 
 # --- HISTÓRICO NO GOOGLE SHEETS ---
@@ -393,7 +525,7 @@ def _status_cobertura() -> str:
 def salvar_no_google_sheets(info_execucao: dict) -> str:
     """Acrescenta a execução atual nas abas Execuções, Histórias e Relatórios. Devolve o ID da execução."""
     df_backlog, df_metricas, df_consolidacao = montar_tabelas_resultado(info_execucao)
-    id_execucao = f"{datetime.now():%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:4]}"
+    id_execucao = info_execucao.get("id_execucao") or novo_id_execucao()
     data_hora = info_execucao["data_hora"]
     planilha = conectar_google_sheets()
 
@@ -432,6 +564,16 @@ def salvar_no_google_sheets(info_execucao: dict) -> str:
         [[_celula(v) for v in linha_rel]], value_input_option="RAW"
     )
     return id_execucao
+
+def novo_id_execucao() -> str:
+    return f"{datetime.now():%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:4]}"
+
+def salvar_refinamento_no_google_sheets(id_execucao: str, registro: dict):
+    """Acrescenta um refinamento na aba Refinamentos, ligado à execução que gerou o backlog."""
+    planilha = conectar_google_sheets()
+    _obter_aba(planilha, "Refinamentos", COLUNAS_REFINAMENTO).append_rows(
+        [[_celula(v) for v in linha_refinamento(registro, id_execucao)]], value_input_option="RAW"
+    )
 
 # --- FERRAMENTAS DO AGENTE ---
 @tool
@@ -498,6 +640,24 @@ Formato da resposta:
     RESULTADOS["analise_normativa"] = resposta
     return resposta
 
+# Busca usada na geração; o refinamento repete a mesma busca para manter a numeração dos trechos
+# citados em "(Origem: Trecho X)"
+CONSULTA_GERACAO = "Módulos, funcionalidades, APIs, Chatbot, Heliasta, Sistema Jurídico Web, regras de negócio e estimativas do projeto"
+K_GERACAO = 25
+
+# Formato das histórias, compartilhado pela geração e pelo refinamento
+FORMATO_HISTORIA = """FORMATO OBRIGATÓRIO PARA CADA HISTÓRIA:
+
+US-[NÚMERO] - [NOME ESPECÍFICO DA FUNCIONALIDADE]
+Como <Persona/Ator>,
+quero <Ação Única e Concreta com contexto do negócio>,
+para que <Benefício Direto e Métrica/Impacto do negócio>.
+
+Critérios de Aceitação:
+- CA1: [Detalhamento concreto da regra, campo, validação ou comportamento] (Origem: Trecho X)
+- CA2: [Detalhamento concreto da regra, campo, validação ou comportamento] (Origem: Trecho Y)
+"""
+
 @tool
 def user_story_rag_generation_tool(payload_contexto: str) -> str:
     """
@@ -510,10 +670,7 @@ def user_story_rag_generation_tool(payload_contexto: str) -> str:
     if not VECTOR_STORE:
         return "Erro: Base vetorial não inicializada."
 
-    docs_relevantes = VECTOR_STORE.similarity_search(
-        "Módulos, funcionalidades, APIs, Chatbot, Heliasta, Sistema Jurídico Web, regras de negócio e estimativas do projeto", 
-        k=25
-    )
+    docs_relevantes = VECTOR_STORE.similarity_search(CONSULTA_GERACAO, k=K_GERACAO)
     contexto_completo = "\n---\n".join([f"[Trecho {i+1}]: {d.page_content}" for i, d in enumerate(docs_relevantes)])
 
     # Na rodada de complemento (após a verificação de lacunas), evita repetir histórias e IDs
@@ -548,20 +705,10 @@ EVITE GENERALISMOS:
   2. Regras de validação, bloqueios ou pré-condições.
   3. Formatos esperados ou comportamentos do sistema em caso de sucesso/erro.
 
-FORMATO OBRIGATÓRIO PARA CADA HISTÓRIA:
-
-US-[NÚMERO] - [NOME ESPECÍFICO DA FUNCIONALIDADE]
-Como <Persona/Ator>,
-quero <Ação Única e Concreta com contexto do negócio>,
-para que <Benefício Direto e Métrica/Impacto do negócio>.
-
-Critérios de Aceitação:
-- CA1: [Detalhamento concreto da regra, campo, validação ou comportamento] (Origem: Trecho X)
-- CA2: [Detalhamento concreto da regra, campo, validação ou comportamento] (Origem: Trecho Y)
-"""),
+""" + FORMATO_HISTORIA),
         HumanMessage(content=f"MAPEAMENTO DE MÓDULOS OBRIGATÓRIOS:\n{mapa_funcionalidades}\n\nCONTEXTO DO DOCUMENTO DE ESCOPO:\n{contexto_completo}\n\nORIENTAÇÃO ADICIONAL: {payload_contexto}{instrucao_continuidade}")
     ]
-    resposta = get_response_from_openai(prompt_geracao).content
+    resposta = formatar_historias(get_response_from_openai(prompt_geracao).content)
     RESULTADOS["historias"].append(resposta)
 
     # O agente recebe só um resumo: o conteúdo completo fica no backlog compartilhado,
@@ -605,10 +752,203 @@ REGRAS DE RESPOSTA:
     RESULTADOS["lacunas"].append(resposta)
     return resposta
 
-def payload_contexto_e_historias() -> str:
+def trechos_para_refinamento(instrucao_usuario: str) -> str:
+    """Mesmos trechos da geração (mesma numeração) + os trechos mais ligados à instrução do usuário."""
+    if not VECTOR_STORE:
+        return ""
+    conteudos = [d.page_content for d in VECTOR_STORE.similarity_search(CONSULTA_GERACAO, k=K_GERACAO)]
+    for d in VECTOR_STORE.similarity_search(instrucao_usuario, k=10):
+        if d.page_content not in conteudos:
+            conteudos.append(d.page_content)
+    return "\n---\n".join([f"[Trecho {i+1}]: {c}" for i, c in enumerate(conteudos)])
+
+@tool
+def user_story_refinement_tool(instrucao_usuario: str) -> str:
+    """
+    Aplica ao backlog atual as correções ou melhorias pedidas pelo usuário
+    (ex.: dividir uma história, detalhar critérios de aceitação, trocar personas).
+    Envie em 'instrucao_usuario' a instrução do usuário exatamente como foi escrita.
+    O backlog atual é lido automaticamente e a versão revisada substitui o backlog compartilhado.
+    """
+    if not RESULTADOS["historias"]:
+        return "Erro: Não há backlog gerado para refinar. Execute o pipeline principal primeiro."
+
+    backlog_antes = backlog_completo()
+    segmentos = segmentar_backlog(backlog_antes)
+    historias_antes = historias_por_id(backlog_antes)
+    existentes = ids_no_backlog()
+    proximo = int(existentes[-1].split("-")[1]) + 1 if existentes else 1
+
+    messages = [
+        SystemMessage(content=f"""
+Você é um Engenheiro de Requisitos Sênior responsável por REFINAR um Backlog de Histórias de Usuário já existente,
+seguindo a instrução do usuário.
+
+REGRAS:
+- Aplique SOMENTE o que a instrução pede. NÃO reescreva, melhore ou renumere histórias que a instrução não atinge.
+- Mantenha os IDs das histórias alteradas.
+- Ao criar histórias novas (inclusive ao dividir uma história), mantenha o ID original na primeira parte
+  e numere as novas a partir de US-{proximo:03d}, em sequência.
+- Mantenha os critérios de aceitação ancorados no documento: preserve as referências "(Origem: Trecho X)" existentes
+  e, em critérios novos ou alterados, cite o trecho do documento que os fundamenta.
+
+""" + FORMATO_HISTORIA + """
+FORMATO DA RESPOSTA:
+- Devolva, completas e no formato obrigatório, SOMENTE as histórias alteradas ou criadas,
+  na ordem em que devem aparecer no backlog.
+- NÃO repita histórias que não mudaram: elas são mantidas automaticamente, sem alteração,
+  e o backlog completo revisado é montado a partir da sua resposta.
+- Se a instrução exigir remover histórias, termine com a linha: REMOVIDAS: US-XXX, US-YYY
+- Não escreva nenhum texto antes ou depois das histórias.
+"""),
+        HumanMessage(content=(
+            f"INSTRUÇÃO DO USUÁRIO:\n{instrucao_usuario}\n\n"
+            f"BACKLOG ATUAL:\n{backlog_antes}\n\n"
+            f"ANÁLISE NORMATIVA DO DOCUMENTO:\n{RESULTADOS['analise_normativa'] or 'Não disponível.'}\n\n"
+            f"CONTEXTO DO DOCUMENTO DE ESCOPO:\n{trechos_para_refinamento(instrucao_usuario) or 'Não disponível.'}"
+        ))
+    ]
+    resposta = get_response_from_openai(messages)
+    if resposta.response_metadata.get("finish_reason") == "length":
+        return ("Erro: a resposta do modelo foi truncada pelo limite de tokens. O backlog NÃO foi alterado; "
+                "peça ao usuário uma instrução que atinja menos histórias.")
+    texto = formatar_historias(resposta.content)
+
+    removidos = set()
+    m_removidas = re.search(r'^\W*REMOVIDAS\s*:\s*(.*)$', texto, re.IGNORECASE | re.MULTILINE)
+    if m_removidas:
+        removidos = {normalizar_id_us(m) for m in re.findall(r'US-?\s*\d+', m_removidas.group(1), re.IGNORECASE)}
+        texto = texto[:m_removidas.start()] + texto[m_removidas.end():]
+    revisadas = [s for s in segmentar_backlog(texto) if s[0]]
+    removidos = sorted((removidos & set(historias_antes)) - {id_us for id_us, _ in revisadas},
+                       key=lambda s: int(s.split("-")[1]))
+
+    # Substitui as histórias revisadas no lugar; as novas entram logo após a anterior da resposta
+    # (ex.: a segunda parte de uma história dividida fica ao lado da primeira)
+    alterados, criados = [], []
+    posicao = None
+    for id_us, bloco in revisadas:
+        indice = next((i for i, (sid, _) in enumerate(segmentos) if sid == id_us), None)
+        if indice is None:
+            indice = posicao + 1 if posicao is not None else len(segmentos)
+            segmentos.insert(indice, [id_us, bloco])
+            criados.append(id_us)
+        else:
+            if _sem_espacos(segmentos[indice][1]) != _sem_espacos(bloco) and id_us not in alterados:
+                alterados.append(id_us)
+            segmentos[indice] = [id_us, bloco]
+        posicao = indice
+    segmentos = [s for s in segmentos if s[0] not in removidos]
+
+    if not (alterados or criados or removidos):
+        return "Nenhuma alteração aplicada: o modelo não devolveu histórias diferentes das atuais. O backlog NÃO foi alterado."
+
+    backlog_revisado = "\n\n".join(bloco for _, bloco in segmentos)
+    RESULTADOS["historias"] = [backlog_revisado]
+    # Só as histórias afetadas perdem as avaliações; as demais mantêm as notas e não são reavaliadas
+    descartar_avaliacoes(set(alterados) | set(criados) | set(removidos))
+    RESULTADOS["ids_reavaliar"] = list(dict.fromkeys((RESULTADOS["ids_reavaliar"] or []) + alterados + criados))
+
+    registro = {
+        "instrucao": instrucao_usuario,
+        "antes": backlog_antes,
+        "depois": backlog_revisado,
+        "data_hora": datetime.now().strftime("%d/%m/%Y %H:%M"),
+        "alterados": alterados,
+        "criados": criados,
+        "removidos": removidos,
+    }
+    RESULTADOS["refinamentos"].append(registro)
+    return (
+        f"Refinamento aplicado ao backlog. {descrever_alteracoes(registro)}. "
+        f"Total no backlog: {len(ids_no_backlog())}. As avaliações das histórias afetadas foram descartadas; "
+        "reexecute as avaliações para reavaliar somente elas."
+    )
+
+# --- REAVALIAÇÃO PARCIAL (MODO REFINAMENTO) ---
+PADRAO_INICIO_US = re.compile(r'^\W*(US-?\s*\d+)\b', re.IGNORECASE)
+
+def _ordenar_ids(ids) -> list:
+    return sorted(ids, key=lambda s: int(s.split("-")[1]))
+
+def blocos_por_us(texto: str) -> dict:
+    """Divide um relatório por história ({US-001: trecho}); linhas antes da primeira história são ignoradas."""
+    blocos = {}
+    atual = None
+    for linha in texto.splitlines():
+        m = PADRAO_INICIO_US.match(linha)
+        if m:
+            atual = normalizar_id_us(m.group(1))
+            blocos.setdefault(atual, [])
+        if atual:
+            blocos[atual].append(linha)
+    return {us: "\n".join(linhas).strip() for us, linhas in blocos.items()}
+
+def tabela_notas(notas: dict, maximo: int) -> str:
+    """Reconstrói a tabela '| US-001 | 6/7 | Atômica |' lida por extrair_notas."""
+    if not notas:
+        return ""
+    linhas = ["| User Story | Nota | Falhas |", "| :--- | :--- | :--- |"]
+    linhas += [f"| {us} | {notas[us][0]}/{maximo} | {notas[us][1]} |" for us in _ordenar_ids(notas)]
+    return "\n".join(linhas)
+
+def descartar_avaliacoes(ids: set):
+    """Remove das avaliações as histórias alteradas, criadas ou removidas, mantendo as das demais."""
+    for chave, maximo in (("qus", 7), ("invest", 6)):
+        notas = extrair_notas(RESULTADOS[chave], maximo)
+        RESULTADOS[chave] = tabela_notas({us: v for us, v in notas.items() if us not in ids}, maximo)
+    blocos = blocos_por_us(RESULTADOS["semantica"])
+    RESULTADOS["semantica"] = "\n\n".join(blocos[us] for us in _ordenar_ids(blocos) if us not in ids)
+    # A matriz de cobertura relaciona as regras ao backlog inteiro: é refeita por completo
+    RESULTADOS["cobertura"] = ""
+
+def ids_para_reavaliar(anteriores: dict):
+    """No modo refinamento, devolve as histórias alteradas/criadas que ainda existem no backlog.
+    None = avaliar o backlog completo (pipeline principal ou sem avaliações anteriores para manter)."""
+    if RESULTADOS["ids_reavaliar"] is None or not anteriores:
+        return None
+    existentes = historias_por_id(backlog_completo())
+    return [us for us in RESULTADOS["ids_reavaliar"] if us in existentes]
+
+def historias_para_reavaliar(ids: list) -> str:
+    historias = historias_por_id(backlog_completo())
+    alvo = "\n\n".join(historias[us] for us in ids)
+    # Os títulos das demais dão contexto para critérios relativos ao backlog (ex.: Independent, Minimal)
+    demais = "\n".join(historias[us].splitlines()[0] for us in historias if us not in ids)
+    return (
+        f"Avalie SOMENTE as histórias abaixo:\n{alvo}\n\n"
+        f"Para referência (NÃO avalie), títulos das demais histórias do backlog:\n{demais}"
+    )
+
+def avaliar_notas(chave: str, maximo: int, instrucoes: str, nome: str) -> str:
+    """Executa a avaliação QUS/INVEST: backlog completo ou, no modo refinamento, só as histórias alteradas."""
+    anteriores = extrair_notas(RESULTADOS[chave], maximo)
+    ids = ids_para_reavaliar(anteriores)
+    if ids == []:
+        return f"Nenhuma história alterada ou criada para reavaliar em {nome}; as notas anteriores foram mantidas."
+
+    entrada = f"Avalie:\n{backlog_completo()}" if ids is None else historias_para_reavaliar(ids)
+    messages = [
+        SystemMessage(content=instrucoes),
+        HumanMessage(content=entrada)
+    ]
+    resposta = get_response_from_openai(messages).content
+
+    if ids is None:
+        RESULTADOS[chave] = resposta
+        return f"Avaliação {nome} concluída para {len(extrair_notas(resposta, maximo))} de {len(ids_no_backlog())} histórias."
+
+    novas = {us: v for us, v in extrair_notas(resposta, maximo).items() if us in ids}
+    RESULTADOS[chave] = tabela_notas({**anteriores, **novas}, maximo)
+    return (
+        f"Reavaliação {nome} concluída para {len(novas)} de {len(ids)} histórias alteradas/criadas "
+        f"({', '.join(ids)}); as demais mantêm a nota anterior."
+    )
+
+def payload_contexto_e_historias(historias: str = None) -> str:
     return (
         f"CONTEXTO (ANÁLISE NORMATIVA DO DOCUMENTO DE ESCOPO):\n{RESULTADOS['analise_normativa']}\n\n"
-        f"HISTÓRIAS DE USUÁRIO GERADAS:\n{backlog_completo()}"
+        f"HISTÓRIAS DE USUÁRIO GERADAS:\n{backlog_completo() if historias is None else historias}"
     )
 
 @tool
@@ -617,7 +957,16 @@ def semantic_consistency_tool(observacao: str = "") -> str:
     Auditoria semântica e verificação de aderência de escopo.
     O contexto e o backlog completo são lidos automaticamente; NÃO copie o conteúdo no argumento.
     """
-    payload = payload_contexto_e_historias()
+    anteriores = blocos_por_us(RESULTADOS["semantica"])
+    ids = ids_para_reavaliar(anteriores)
+    if ids == []:
+        return "Nenhuma história alterada ou criada para reavaliar semanticamente; a análise anterior foi mantida."
+    historias = None
+    if ids is not None:
+        historias_backlog = historias_por_id(backlog_completo())
+        historias = "\n\n".join(historias_backlog[us] for us in ids)
+
+    payload = payload_contexto_e_historias(historias)
     messages = [
         SystemMessage(content="""
 Você é um Auditor Semântico de Requisitos.
@@ -632,8 +981,14 @@ Justificativa: Explicar concisamente se a funcionalidade existe no documento de 
         HumanMessage(content=f"DADOS PARA ANÁLISE SEMÂNTICA:\n\n{payload}")
     ]
     resposta = get_response_from_openai(messages).content
-    RESULTADOS["semantica"] = resposta
-    return "Análise semântica concluída e armazenada para exibição."
+    if ids is None:
+        RESULTADOS["semantica"] = resposta
+        return "Análise semântica concluída e armazenada para exibição."
+
+    novos = {us: bloco for us, bloco in blocos_por_us(resposta).items() if us in ids}
+    blocos = {**anteriores, **novos}
+    RESULTADOS["semantica"] = "\n\n".join(blocos[us] for us in _ordenar_ids(blocos))
+    return f"Reanálise semântica concluída para {len(novos)} de {len(ids)} histórias alteradas/criadas ({', '.join(ids)})."
 
 @tool
 def requirements_coverage_tool(observacao: str = "") -> str:
@@ -664,9 +1019,7 @@ def quality_assessment_tool(observacao: str = "") -> str:
     Avaliação estritamente estrutural/sintática no framework QUS (7 dimensões).
     O backlog completo é lido automaticamente; NÃO copie as histórias no argumento.
     """
-    user_stories = backlog_completo()
-    messages = [
-        SystemMessage(content="""Você é um auditor do framework QUS (Quality of User Stories).
+    return avaliar_notas("qus", 7, """Você é um auditor do framework QUS (Quality of User Stories).
 Avalie cada história em 7 critérios binários (1/0):
 1. Bem-formada (Well-formed)
 2. Atômica (Atomic)
@@ -677,12 +1030,7 @@ Avalie cada história em 7 critérios binários (1/0):
 7. Estimável (Estimable)
 
 SE A NOTA FOR MENOR QUE 7, VOCÊ É OBRIGADO A NOMEAR EXATAMENTE QUAIS CRITÉRIOS FALHARAM.
-Exemplo para nota 6/7: "Falha: Atômica". NUNCA omita a justificativa da perda de ponto.""" + FORMATO_TABELA_AVALIACAO.format(exemplo="6/7", falha_exemplo="Atômica")),
-        HumanMessage(content=f"Avalie:\n{user_stories}")
-    ]
-    resposta = get_response_from_openai(messages).content
-    RESULTADOS["qus"] = resposta
-    return f"Avaliação QUS concluída para {len(extrair_notas(resposta, 7))} de {len(ids_no_backlog())} histórias."
+Exemplo para nota 6/7: "Falha: Atômica". NUNCA omita a justificativa da perda de ponto.""" + FORMATO_TABELA_AVALIACAO.format(exemplo="6/7", falha_exemplo="Atômica"), "QUS")
 
 @tool
 def invest_assessment_tool(observacao: str = "") -> str:
@@ -690,9 +1038,7 @@ def invest_assessment_tool(observacao: str = "") -> str:
     Avaliação de viabilidade ágil no acrônimo INVEST (6 dimensões).
     O backlog completo é lido automaticamente; NÃO copie as histórias no argumento.
     """
-    user_stories = backlog_completo()
-    messages = [
-        SystemMessage(content="""Você é um Agile Coach especialista em INVEST.
+    return avaliar_notas("invest", 6, """Você é um Agile Coach especialista em INVEST.
 Avalie cada história em 6 critérios binários (1/0):
 1. Independent
 2. Negotiable
@@ -702,12 +1048,7 @@ Avalie cada história em 6 critérios binários (1/0):
 6. Testable
 
 SE A NOTA FOR MENOR QUE 6, VOCÊ É OBRIGADO A NOMEAR EXATAMENTE QUAIS CRITÉRIOS FALHARAM.
-Exemplo para nota 5/6: "Falha: Small". NUNCA omita a justificativa da perda de ponto.""" + FORMATO_TABELA_AVALIACAO.format(exemplo="5/6", falha_exemplo="Small")),
-        HumanMessage(content=f"Avalie:\n{user_stories}")
-    ]
-    resposta = get_response_from_openai(messages).content
-    RESULTADOS["invest"] = resposta
-    return f"Avaliação INVEST concluída para {len(extrair_notas(resposta, 6))} de {len(ids_no_backlog())} histórias."
+Exemplo para nota 5/6: "Falha: Small". NUNCA omita a justificativa da perda de ponto.""" + FORMATO_TABELA_AVALIACAO.format(exemplo="5/6", falha_exemplo="Small"), "INVEST")
 
 # --- CONFIGURAÇÃO DO AGENTE E PROMPT ---
 # CORREÇÃO: Adicionado 'gap_coverage_verification_tool' à lista de ferramentas
@@ -753,6 +1094,47 @@ NÃO reproduza histórias, tabelas ou relatórios na resposta final: a interface
 
 agent = create_openai_tools_agent(llm, toolkit, prompt)
 agent_executor = AgentExecutor(agent=agent, tools=toolkit, verbose=True, max_iterations=15)
+
+# --- AGENTE DO MODO REFINAMENTO ---
+# Toolkit próprio: sem indexação, análise normativa e geração, que não devem ser reexecutadas
+toolkit_refinamento = [
+    user_story_refinement_tool,
+    semantic_consistency_tool,
+    requirements_coverage_tool,
+    quality_assessment_tool,
+    invest_assessment_tool,
+]
+
+prompt_refinamento = ChatPromptTemplate.from_messages([
+    ("system", """
+Você é um Engenheiro de Software automatizado especialista em Engenharia de Requisitos com suporte a RAG.
+O backlog de histórias JÁ FOI GERADO e avaliado. Você está no MODO REFINAMENTO: o usuário pediu correções ou melhorias.
+
+IMPORTANTE: as ferramentas compartilham os resultados automaticamente. O backlog atual, a análise normativa e o
+documento indexado são lidos diretamente pelas ferramentas.
+NUNCA copie histórias, critérios de aceitação ou relatórios nos argumentos das ferramentas.
+
+Instruções estritas do fluxo de refinamento:
+
+1. Execute 'user_story_refinement_tool' enviando em 'instrucao_usuario' a instrução do usuário EXATAMENTE como foi escrita.
+   - SE retornar erro ou informar que nenhuma alteração foi aplicada, PARE e informe o motivo ao usuário.
+2. Para reavaliar o backlog corrigido, chame as quatro ferramentas JUNTAS, na mesma resposta:
+   'semantic_consistency_tool', 'requirements_coverage_tool', 'quality_assessment_tool' e 'invest_assessment_tool'.
+   As avaliações semântica, QUS e INVEST reavaliam automaticamente SOMENTE as histórias alteradas ou criadas;
+   a matriz de cobertura é refeita para o backlog inteiro.
+
+Ao final, responda APENAS com um resumo curto (no máximo 3 linhas): quais histórias foram alteradas, criadas ou removidas
+e quais foram reavaliadas.
+NÃO reproduza histórias, tabelas ou relatórios na resposta final: a interface exibe os resultados das ferramentas diretamente.
+"""),
+    ("human", "{input}"),
+    MessagesPlaceholder(variable_name="agent_scratchpad"),
+])
+
+agent_refinamento = create_openai_tools_agent(llm, toolkit_refinamento, prompt_refinamento)
+agent_executor_refinamento = AgentExecutor(
+    agent=agent_refinamento, tools=toolkit_refinamento, verbose=True, max_iterations=6
+)
 
 # --- ACOMPANHAMENTO EM TEMPO REAL ---
 class PipelineProgressHandler(BaseCallbackHandler):
@@ -823,6 +1205,205 @@ class PipelineProgressHandler(BaseCallbackHandler):
 
 # --- INTERFACE DO STREAMLIT ---
 
+def renderizar_historico_refinamentos():
+    with st.expander(f"Histórico de refinamentos ({len(RESULTADOS['refinamentos'])})"):
+        for i, registro in enumerate(RESULTADOS["refinamentos"], start=1):
+            st.markdown(f"**{i}. {registro['data_hora']}** — _{registro['instrucao']}_")
+            st.caption(descrever_alteracoes(registro))
+            antes = historias_por_id(registro["antes"])
+            depois = historias_por_id(registro["depois"])
+            for id_us in registro["alterados"] + registro["criados"] + registro["removidos"]:
+                col_antes, col_depois = st.columns(2)
+                with col_antes:
+                    st.markdown(f"**Antes — {id_us}**")
+                    st.markdown(markdown_com_quebras(antes.get(id_us, "_(não existia)_")))
+                with col_depois:
+                    st.markdown(f"**Depois — {id_us}**")
+                    st.markdown(markdown_com_quebras(depois.get(id_us, "_(removida)_")))
+            st.markdown("---")
+
+def renderizar_refinamento(info_execucao: dict):
+    st.subheader("✏️ Refinar histórias")
+    instrucao_refinamento = st.text_area(
+        "Descreva o que deve ser corrigido ou melhorado",
+        key="instrucao_refinamento",
+        placeholder="Ex.: divida a US-004 em duas; detalhe os critérios de aceitação da US-010; troque a persona 'usuário' por 'advogado'",
+    )
+    st.caption("Pressione Ctrl+Enter ou clique fora da caixa para habilitar o botão.")
+    if st.button(
+        "🔁 Reprocessar com este prompt",
+        use_container_width=True,
+        disabled=not RESULTADOS["historias"] or not instrucao_refinamento.strip(),
+    ):
+        executar_refinamento(instrucao_refinamento.strip(), info_execucao)
+
+def renderizar_resultados(info_execucao: dict):
+    """Exibe a exportação e as abas de resultado a partir de RESULTADOS (chamada em todo rerun)."""
+    # Reservado no topo, mas preenchido no fim: um refinamento feito neste rerun já entra no .xlsx
+    area_download = st.container()
+
+    tab0, tab1, tab2, tab3, tab4 = st.tabs([
+        "📋 Análise Normativa & Lacunas",
+        "📌 Backlog Ancorado (RAG)",
+        "📊 Métricas de Qualidade (QUS/INVEST)",
+        "🔍 Validação Semântica & Cobertura",
+        "⚡ Desempenho & Recursos"
+    ])
+
+    with tab0:
+        st.header("📋 Análise Normativa e Detecção de Omissões no Documento")
+        conteudo_normativa = RESULTADOS["analise_normativa"] or "_A análise normativa não foi executada._"
+        st.markdown(conteudo_normativa.strip())
+        for i, relatorio_lacunas in enumerate(RESULTADOS["lacunas"], start=1):
+            with st.expander(f"Verificação de lacunas — rodada {i}"):
+                st.markdown(relatorio_lacunas)
+    with tab1:
+        st.header("📌 Backlog de User Stories Gerado")
+        # O backlog fica acima do refinamento, mas só é desenhado depois dele: um refinamento
+        # feito neste rerun já aparece no backlog e nas demais abas
+        area_backlog = st.container()
+        st.markdown("---")
+        renderizar_refinamento(info_execucao)
+        with area_backlog:
+            st.caption(f"{len(ids_no_backlog())} histórias no backlog")
+            if RESULTADOS["refinamentos"]:
+                renderizar_historico_refinamentos()
+            conteudo_us = backlog_completo() or "_Nenhuma história gerada._"
+            st.markdown(markdown_com_quebras(formatar_historias(conteudo_us.strip())))
+
+    conteudo_metricas = montar_secao_metricas() if (RESULTADOS["qus"] or RESULTADOS["invest"]) else "_As avaliações QUS/INVEST não foram executadas._"
+    conteudo_semantica = RESULTADOS["semantica"] or "_A validação semântica não foi executada._"
+    conteudo_cobertura = RESULTADOS["cobertura"]
+
+    with tab2:
+        st.header("📊 Métricas e Auditoria Qualitativa (Estrutura e Sintaxe)")
+        st.markdown(conteudo_metricas.strip())
+
+    with tab3:
+        st.header("🔍 Relatório do Avaliador (Aderência de Escopo e Semântica)")
+        st.markdown(
+            """
+            <style>
+            section[data-testid="stMarkdownContainer"] table { width: 100%; }
+            section[data-testid="stMarkdownContainer"] th { background-color: #1E293B; color: white; text-align: center; }
+            section[data-testid="stMarkdownContainer"] td { vertical-align: top; white-space: pre-wrap; }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.markdown("#### 1. Relatório de Validação de Domínio e Nexo Semântico")
+        st.markdown(conteudo_semantica.strip())
+
+        st.markdown("#### 2. Matriz de Cobertura de Requisitos")
+        if not conteudo_cobertura:
+            st.markdown("_A matriz de cobertura não foi executada._")
+        else:
+            try:
+                json_limpo = re.sub(r'^```(?:json)?\s*|\s*```$', '', conteudo_cobertura.strip())
+                st.dataframe(json.loads(json_limpo), use_container_width=True)
+            except ValueError:
+                st.markdown(conteudo_cobertura)
+
+    with tab4:
+        st.header("⚡ Desempenho Técnico do Pipeline")
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            st.metric(label="⏱ Tempo Total de Execução", value=f"{info_execucao['tempo_s']:.2f} s")
+            st.metric(label="💾 Consumo de Memória de Pico", value=f"{info_execucao['memoria_pico_mb']:.2f} MB")
+
+        with col2:
+            st.metric(label="📥 Tokens de Entrada (Prompt)", value=f"{info_execucao['tokens_entrada']}")
+            st.metric(label="📤 Tokens de Saída (Completion)", value=f"{info_execucao['tokens_saida']}")
+
+        with col3:
+            st.metric(label="🔢 Total de Tokens", value=f"{info_execucao['tokens_total']}")
+            st.metric(label="💵 Custo Real (gpt-4o-mini)", value=f"${info_execucao['custo_usd']:.5f} USD")
+            st.metric(label="🌡️ Temperatura Utilizada", value=f"{info_execucao['temperatura']:.1f}")
+
+        if RESULTADOS["refinamentos"]:
+            st.markdown("#### 🔁 Refinamentos")
+            colunas = ["Data/hora", "Instrução", "Histórias antes", "Histórias depois", "QUS antes", "QUS depois",
+                       "INVEST antes", "INVEST depois", "Tokens de entrada", "Tokens de saída",
+                       "Custo estimado (USD)", "Tempo (s)"]
+            st.dataframe(
+                tabela_refinamentos(info_execucao.get("id_execucao", ""))[colunas],
+                use_container_width=True,
+                hide_index=True,
+            )
+
+    if RESULTADOS["historias"]:
+        with area_download:
+            st.download_button(
+                "📥 Exportar Backlog RAG e Métricas de Qualidade (.xlsx)",
+                data=gerar_xlsx(info_execucao),
+                file_name=f"backlog_metricas_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                on_click="ignore",  # não reexecuta o app: os resultados continuam na tela após o download
+                use_container_width=True,
+            )
+
+def executar_refinamento(instrucao: str, info_execucao: dict):
+    """Executa o agente no modo refinamento e registra o resultado (histórico e Google Sheets)."""
+    total_refinamentos = len(RESULTADOS["refinamentos"])
+    historias_antes = len(ids_no_backlog())
+    qus_antes, invest_antes = totais_qus_invest()
+    tempo_inicial = time.time()
+
+    st.markdown("#### 🛰️ Refinamento em tempo real")
+    st_callback = PipelineProgressHandler(st.container())
+
+    with st.spinner("O Agente está aplicando as correções e reavaliando o backlog... Aguarde."):
+        with get_openai_callback() as cb:
+            try:
+                result = agent_executor_refinamento.invoke(
+                    {
+                        "input": (
+                            "Refine o backlog atual conforme a instrução do usuário abaixo e reavalie as métricas "
+                            f"semântica, de cobertura, QUS e INVEST.\n\nINSTRUÇÃO DO USUÁRIO:\n{instrucao}"
+                        )
+                    },
+                    config={"callbacks": [st_callback]},
+                )
+            except Exception as e:
+                st.error(f"Ocorreu um erro durante o refinamento: {e}")
+                if len(RESULTADOS["refinamentos"]) > total_refinamentos:
+                    st.warning("O backlog foi alterado, mas as métricas podem não ter sido recalculadas.")
+                return
+            finally:
+                # Volta ao modo normal: as próximas avaliações consideram o backlog completo
+                RESULTADOS["ids_reavaliar"] = None
+
+    novos = RESULTADOS["refinamentos"][total_refinamentos:]
+    if not novos:
+        st.warning(f"Nenhuma alteração foi aplicada ao backlog. Resposta do agente:\n\n{result['output']}")
+        return
+
+    qus_depois, invest_depois = totais_qus_invest()
+    registro = novos[-1]
+    registro.update({
+        "historias_antes": historias_antes,
+        "historias_depois": len(ids_no_backlog()),
+        "qus_antes": qus_antes,
+        "qus_depois": qus_depois,
+        "invest_antes": invest_antes,
+        "invest_depois": invest_depois,
+        "temperatura": temperatura,
+        "tokens_entrada": cb.prompt_tokens,
+        "tokens_saida": cb.completion_tokens,
+        "custo_usd": calcular_custo(cb),
+        "tempo_s": time.time() - tempo_inicial,
+    })
+    st.success(f"Refinamento concluído! {result['output']}")
+
+    # Histórico automático: falhas aqui não interrompem a exibição dos resultados
+    try:
+        with st.spinner("Salvando o refinamento no Google Sheets..."):
+            salvar_refinamento_no_google_sheets(info_execucao.get("id_execucao", ""), registro)
+        st.info("📚 Refinamento salvo no Google Sheets (aba Refinamentos).")
+    except Exception as erro_sheets:
+        st.warning(f"Não foi possível salvar o refinamento no Google Sheets: {erro_sheets}")
+
 st.title("Geração de Histórias de Usuário - UFF")
 st.subheader("Agentes Multi-Ferramentas")
 st.markdown("---")
@@ -833,11 +1414,14 @@ url_documento = st.text_input("Cole aqui a URL pública do documento de escopo (
 if st.button("🚀 Iniciar Pipeline de IA", use_container_width=True):
     tracemalloc.start()
     tempo_inicial = time.time()
-    
+
     # Acompanhamento em tempo real: cada ferramenta chamada pelo agente aparece abaixo com entrada e saída
     st.markdown("#### 🛰️ Execução em tempo real")
     st_callback = PipelineProgressHandler(st.container())
     novo_estado_execucao()
+    VECTOR_STORE = None
+    st.session_state.pop("vector_store", None)
+    st.session_state.pop("info_execucao", None)
 
     with st.spinner("O Agente está processando o documento, mapeando todos os módulos e gerando o backlog completo... Aguarde."):
         with get_openai_callback() as cb:
@@ -848,30 +1432,32 @@ if st.button("🚀 Iniciar Pipeline de IA", use_container_width=True):
                     },
                     config={"callbacks": [st_callback]},
                 )
-                
+
                 tempo_final = time.time()
                 memoria_atual, memoria_pico = tracemalloc.get_traced_memory()
                 tracemalloc.stop()
-                
-                custo_entrada = (cb.prompt_tokens / 1000000) * 0.15
-                custo_saida = (cb.completion_tokens / 1000000) * 0.60
-                custo_real_calculado = custo_entrada + custo_saida
-                
+
+                # Guardados para os próximos reruns (refinamento, troca de aba, download)
+                st.session_state["vector_store"] = VECTOR_STORE
+                info_execucao = {
+                    "id_execucao": novo_id_execucao(),
+                    "data_hora": datetime.now().strftime("%d/%m/%Y %H:%M"),
+                    "url": url_documento,
+                    "temperatura": temperatura,
+                    "tempo_s": tempo_final - tempo_inicial,
+                    "memoria_pico_mb": memoria_pico / (1024 * 1024),
+                    "tokens_entrada": cb.prompt_tokens,
+                    "tokens_saida": cb.completion_tokens,
+                    "tokens_total": cb.total_tokens,
+                    "custo_usd": calcular_custo(cb),
+                }
+                st.session_state["info_execucao"] = info_execucao
+
                 # Os conteúdos vêm direto das ferramentas (RESULTADOS), não da resposta final do agente
                 if not RESULTADOS["historias"]:
                     st.warning(f"O pipeline terminou sem gerar histórias. Resposta do agente:\n\n{result['output']}")
                 else:
                     st.success(f"Processamento Concluído com Sucesso! {result['output']}")
-
-                    info_execucao = {
-                        "data_hora": datetime.now().strftime("%d/%m/%Y %H:%M"),
-                        "url": url_documento,
-                        "temperatura": temperatura,
-                        "tempo_s": tempo_final - tempo_inicial,
-                        "tokens_entrada": cb.prompt_tokens,
-                        "tokens_saida": cb.completion_tokens,
-                        "custo_usd": custo_real_calculado,
-                    }
 
                     # Histórico automático: falhas aqui não interrompem a exibição dos resultados
                     try:
@@ -881,86 +1467,10 @@ if st.button("🚀 Iniciar Pipeline de IA", use_container_width=True):
                     except Exception as erro_sheets:
                         st.warning(f"Não foi possível salvar no Google Sheets: {erro_sheets}")
 
-                    arquivo_xlsx = gerar_xlsx(info_execucao)
-                    st.download_button(
-                        "📥 Exportar Backlog RAG e Métricas de Qualidade (.xlsx)",
-                        data=arquivo_xlsx,
-                        file_name=f"backlog_metricas_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        on_click="ignore",  # não reexecuta o app: os resultados continuam na tela após o download
-                        use_container_width=True,
-                    )
-
-                conteudo_normativa = RESULTADOS["analise_normativa"] or "_A análise normativa não foi executada._"
-                conteudo_us = backlog_completo() or "_Nenhuma história gerada._"
-                conteudo_metricas = montar_secao_metricas() if (RESULTADOS["qus"] or RESULTADOS["invest"]) else "_As avaliações QUS/INVEST não foram executadas._"
-                conteudo_semantica = RESULTADOS["semantica"] or "_A validação semântica não foi executada._"
-                conteudo_cobertura = RESULTADOS["cobertura"]
-
-                tab0, tab1, tab2, tab3, tab4 = st.tabs([
-                    "📋 Análise Normativa & Lacunas",
-                    "📌 Backlog Ancorado (RAG)", 
-                    "📊 Métricas de Qualidade (QUS/INVEST)", 
-                    "🔍 Validação Semântica & Cobertura", 
-                    "⚡ Desempenho & Recursos"
-                ])
-                
-                with tab0:
-                    st.header("📋 Análise Normativa e Detecção de Omissões no Documento")
-                    st.markdown(conteudo_normativa.strip())
-                    for i, relatorio_lacunas in enumerate(RESULTADOS["lacunas"], start=1):
-                        with st.expander(f"Verificação de lacunas — rodada {i}"):
-                            st.markdown(relatorio_lacunas)
-                with tab1:
-                    st.header("📌 Backlog de User Stories Gerado")
-                    st.caption(f"{len(ids_no_backlog())} histórias no backlog")
-                    st.markdown(conteudo_us.strip())
-                    
-                with tab2:
-                    st.header("📊 Métricas e Auditoria Qualitativa (Estrutura e Sintaxe)")
-                    st.markdown(conteudo_metricas.strip())
-                    
-                with tab3:
-                    st.header("🔍 Relatório do Avaliador (Aderência de Escopo e Semântica)")
-                    st.markdown(
-                        """
-                        <style>
-                        section[data-testid="stMarkdownContainer"] table { width: 100%; }
-                        section[data-testid="stMarkdownContainer"] th { background-color: #1E293B; color: white; text-align: center; }
-                        section[data-testid="stMarkdownContainer"] td { vertical-align: top; white-space: pre-wrap; }
-                        </style>
-                        """,
-                        unsafe_allow_html=True,
-                    )
-                    st.markdown("#### 1. Relatório de Validação de Domínio e Nexo Semântico")
-                    st.markdown(conteudo_semantica.strip())
-
-                    st.markdown("#### 2. Matriz de Cobertura de Requisitos")
-                    if not conteudo_cobertura:
-                        st.markdown("_A matriz de cobertura não foi executada._")
-                    else:
-                        try:
-                            json_limpo = re.sub(r'^```(?:json)?\s*|\s*```$', '', conteudo_cobertura.strip())
-                            st.dataframe(json.loads(json_limpo), use_container_width=True)
-                        except ValueError:
-                            st.markdown(conteudo_cobertura)
-                    
-                with tab4:
-                    st.header("⚡ Desempenho Técnico do Pipeline")
-                    col1, col2, col3 = st.columns(3)
-                    
-                    with col1:
-                        st.metric(label="⏱ Tempo Total de Execução", value=f"{tempo_final - tempo_inicial:.2f} s")
-                        st.metric(label="💾 Consumo de Memória de Pico", value=f"{memoria_pico / (1024 * 1024):.2f} MB")
-                    
-                    with col2:
-                        st.metric(label="📥 Tokens de Entrada (Prompt)", value=f"{cb.prompt_tokens}")
-                        st.metric(label="📤 Tokens de Saída (Completion)", value=f"{cb.completion_tokens}")
-                    
-                    with col3:
-                        st.metric(label="🔢 Total de Tokens", value=f"{cb.total_tokens}")
-                        st.metric(label="💵 Custo Real (gpt-4o-mini)", value=f"${custo_real_calculado:.5f} USD")
-                        st.metric(label="🌡️ Temperatura Utilizada", value=f"{temperatura:.1f}")
-                        
             except Exception as e:
                 st.error(f"Ocorreu um erro durante a execução do agente: {e}")
+
+# Resultados ficam fora do if do botão para continuarem na tela em qualquer rerun
+# (o refinamento fica dentro da aba do backlog)
+if "info_execucao" in st.session_state:
+    renderizar_resultados(st.session_state["info_execucao"])
