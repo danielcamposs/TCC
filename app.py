@@ -12,6 +12,9 @@ import tracemalloc
 import re
 import io
 import json
+import html
+import logging
+import textwrap
 import uuid
 from datetime import datetime
 import requests
@@ -28,13 +31,14 @@ from langchain.agents import AgentExecutor, create_openai_tools_agent
 from langchain_openai import ChatOpenAI
 from langchain.tools import tool
 from langchain_community.callbacks.manager import get_openai_callback
-from langchain_core.callbacks import BaseCallbackHandler
 from langchain_community.vectorstores import FAISS
 from langchain_openai import OpenAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
+LOGGER = logging.getLogger(__name__)
+
 # O Streamlit reexecuta o script inteiro a cada clique: a base vetorial e os resultados ficam
-# em st.session_state para sobreviver aos reruns (ex.: clique no botão de refinamento).
+# em st.session_state para sobreviver aos reruns do Streamlit.
 VECTOR_STORE = st.session_state.get("vector_store")
 
 # Resultados produzidos pelas ferramentas na execução atual.
@@ -130,9 +134,415 @@ def markdown_com_quebras(texto: str) -> str:
 
 # Configuração da página do Streamlit
 st.set_page_config(
-    page_title="Sandbox de Engenharia de Requisitos Ágeis - UFF",
-    page_icon="🎓",
-    layout="wide"
+    page_title="ARES | Engenharia de Requisitos",
+    page_icon=os.path.join(os.path.dirname(os.path.abspath(__file__)), "ares-favicon-azul.svg"),
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
+
+st.markdown(
+    """
+    <style>
+    :root {
+        --ares-blue: #3b82f6;
+        --ares-navy: #1e3a8a;
+        --ares-ink: #1e293b;
+        --ares-muted: #64748b;
+    }
+
+    .stApp {
+        background:
+            radial-gradient(ellipse at 92% 0%, rgba(59, 130, 246, .10), transparent 34rem),
+            #f8fafc;
+        color: var(--ares-ink) !important;
+        color-scheme: light;
+    }
+    [data-testid="stAppViewContainer"] { color: var(--ares-ink) !important; }
+    .block-container,
+    section.main > div.block-container {
+        width: calc(100vw - 3rem) !important;
+        max-width: 1800px !important;
+        padding-top: 1.25rem;
+        padding-bottom: 3rem;
+        margin-inline: auto;
+    }
+    [data-testid="stHeader"] { background: transparent; }
+    [data-testid="stSidebar"],
+    [data-testid="stSidebarCollapsedControl"] { display: none !important; }
+    h1, h2, h3 { color: var(--ares-ink) !important; letter-spacing: -.025em; }
+    h1 { font-weight: 800 !important; }
+    [data-testid="stMarkdownContainer"] p,
+    [data-testid="stCaptionContainer"] p,
+    [data-testid="stWidgetLabel"] p {
+        color: var(--ares-muted) !important;
+    }
+    [data-testid="stTextInput"] [data-baseweb="input"] {
+        border: 1px solid var(--ares-blue) !important;
+        border-radius: 12px;
+        background: #fff !important;
+        box-shadow: none !important;
+        transition: border-color .15s ease, box-shadow .15s ease;
+    }
+    [data-testid="stTextInput"] [data-baseweb="input"]:hover {
+        border-color: var(--ares-navy) !important;
+    }
+    [data-testid="stTextInput"] [data-baseweb="input"]:focus-within {
+        border-color: var(--ares-blue) !important;
+        box-shadow: 0 0 0 3px rgba(59, 130, 246, .14) !important;
+    }
+    [data-testid="stTextInput"] input,
+    [data-testid="stTextArea"] textarea {
+        border: 0 !important;
+        border-radius: 12px;
+        background: #fff !important;
+        color: var(--ares-ink) !important;
+        box-shadow: none !important;
+        outline: none !important;
+    }
+    [data-testid="stTextArea"] textarea:focus {
+        border: 1px solid var(--ares-blue) !important;
+        box-shadow: 0 0 0 3px rgba(59, 130, 246, .14) !important;
+    }
+    [data-testid="stButton"] button,
+    [data-testid="stDownloadButton"] button {
+        min-height: 2.8rem;
+        border-radius: 11px;
+        border: 0;
+        color: #fff;
+        background: linear-gradient(110deg, var(--ares-navy), #3b82f6);
+        font-weight: 700;
+        box-shadow: 0 5px 14px rgba(30, 58, 138, .18);
+        transition: transform .15s ease, box-shadow .15s ease;
+    }
+    [data-testid="stButton"] button:hover,
+    [data-testid="stDownloadButton"] button:hover {
+        color: #fff;
+        box-shadow: 0 8px 20px rgba(30, 58, 138, .25);
+        transform: translateY(-1px);
+    }
+    [data-testid="stButton"] button p,
+    [data-testid="stDownloadButton"] button p {
+        color: #fff !important;
+    }
+    [data-testid="stExpander"] {
+        margin: .55rem 0;
+        overflow: hidden;
+        border: 1px solid #dbe5e1;
+        border-radius: 14px;
+        background: rgba(255, 255, 255, .82);
+    }
+    [data-testid="stExpander"] summary {
+        color: var(--ares-navy);
+        font-weight: 700;
+    }
+    [data-testid="stButtonGroup"] {
+        position: sticky;
+        top: 2.8rem;
+        z-index: 20;
+        padding: .45rem;
+        border: 1px solid #dbe3ee;
+        border-radius: 16px;
+        background: #e8edf5 !important;
+        box-shadow: 0 4px 12px rgba(15, 23, 42, .07);
+    }
+    [data-testid="stButtonGroup"] > div:last-child {
+        display: flex;
+        width: 100%;
+        gap: .45rem;
+        border: 0 !important;
+        border-radius: 999px;
+        background: transparent !important;
+    }
+    [data-testid="stButtonGroup"] button[data-variant="segmented_control"] {
+        flex: 1 1 0;
+        justify-content: center;
+        min-height: 3.25rem;
+        padding: .65rem 1rem;
+        border: 1px solid #d7dee9 !important;
+        border-radius: 999px;
+        color: #334155 !important;
+        background: #fff !important;
+        font-size: 1.05rem;
+        font-weight: 650;
+        box-shadow: none !important;
+        outline: none;
+        transition: color .15s ease, background-color .15s ease, border-color .15s ease, box-shadow .15s ease;
+    }
+    [data-testid="stButtonGroup"] button[data-variant="segmented_control"][aria-pressed="true"],
+    [data-testid="stButtonGroup"] button[data-variant="segmented_control"][aria-selected="true"],
+    [data-testid="stButtonGroup"] button[data-variant="segmented_control"][aria-checked="true"],
+    [data-testid="stButtonGroup"] button[data-variant="segmented_control"][data-selected="true"],
+    [data-testid="stButtonGroup"] button[data-variant="segmented_control"][data-state="on"],
+    [data-testid="stButtonGroup"] button[data-variant="segmented_control"]:has(input:checked) {
+        border-color: #1677e8 !important;
+        color: #fff !important;
+        background: #1677e8 !important;
+        box-shadow: 0 3px 8px rgba(22, 119, 232, .24) !important;
+    }
+    [data-testid="stButtonGroup"] button[data-variant="segmented_control"]:hover:not([aria-pressed="true"]):not([aria-selected="true"]):not([aria-checked="true"]):not([data-selected="true"]):not([data-state="on"]) {
+        border-color: #93c5fd !important;
+        color: var(--ares-navy) !important;
+        background: #f8fbff !important;
+    }
+    [data-testid="stButtonGroup"] button[data-variant="segmented_control"] *,
+    [data-testid="stButtonGroup"] button[data-variant="segmented_control"] p,
+    [data-testid="stButtonGroup"] button[data-variant="segmented_control"] span {
+        color: inherit !important;
+        font-size: inherit !important;
+        font-weight: inherit !important;
+    }
+    .st-key-ares-analysis-normative,
+    .st-key-ares-analysis-gaps,
+    .st-key-ares-analysis-quality,
+    .st-key-ares-analysis-semantic,
+    .st-key-ares-analysis-coverage {
+        border-color: #dbe5e1 !important;
+        border-radius: 16px !important;
+        background: #fff !important;
+        box-shadow: 0 5px 16px rgba(15, 23, 42, .05);
+    }
+    .st-key-ares-analysis-normative [data-testid="stMarkdownContainer"] h1 {
+        font-size: 1.35rem !important;
+        line-height: 1.35 !important;
+    }
+    .st-key-ares-analysis-normative [data-testid="stMarkdownContainer"] h2 {
+        margin-top: 1rem;
+        font-size: 1.12rem !important;
+        line-height: 1.4 !important;
+    }
+    .st-key-ares-analysis-normative [data-testid="stMarkdownContainer"] h3 {
+        font-size: 1rem !important;
+    }
+    .st-key-ares-analysis-normative [data-testid="stMarkdownContainer"] p,
+    .st-key-ares-analysis-normative [data-testid="stMarkdownContainer"] li,
+    .st-key-ares-analysis-gaps [data-testid="stMarkdownContainer"] p,
+    .st-key-ares-analysis-gaps [data-testid="stMarkdownContainer"] li {
+        color: #334155 !important;
+        font-size: .96rem;
+        line-height: 1.6;
+    }
+    @media (max-width: 700px) {
+        [data-testid="stButtonGroup"] > div:last-child { gap: .25rem; }
+        [data-testid="stButtonGroup"] button[data-variant="segmented_control"] {
+            min-height: 2.8rem;
+            padding: .45rem .25rem;
+            font-size: .88rem;
+        }
+    }
+    [data-testid="stMarkdownContainer"] table { width: 100%; }
+    [data-testid="stMarkdownContainer"] th {
+        background: var(--ares-navy);
+        color: #fff;
+        text-align: left;
+    }
+    [data-testid="stMarkdownContainer"] td {
+        vertical-align: top;
+        white-space: pre-wrap;
+    }
+    [data-testid="stMetric"] {
+        padding: 1rem;
+        border: 1px solid #dbe5e1;
+        border-radius: 14px;
+        background: #fff;
+    }
+    .ares-story-card {
+        margin: 0 0 1rem;
+        padding: 1.35rem 1.5rem;
+        border: 1px solid #dbe5e1;
+        border-left: 6px solid var(--ares-blue);
+        border-radius: 16px;
+        background: #fff;
+        box-shadow: 0 5px 18px rgba(23, 52, 58, .08);
+    }
+    .ares-story-card-header {
+        display: flex;
+        align-items: flex-start;
+        gap: .75rem;
+        margin-bottom: .8rem;
+    }
+    .ares-story-id {
+        flex: 0 0 auto;
+        padding: .3rem .6rem;
+        border-radius: 8px;
+        background: #dbeafe;
+        color: var(--ares-navy);
+        font-weight: 800;
+        font-size: .9rem;
+    }
+    .ares-story-title {
+        margin: .2rem 0 0;
+        color: var(--ares-ink);
+        font-size: 1.1rem;
+        font-weight: 750;
+        line-height: 1.4;
+    }
+    .ares-story-module {
+        margin: 0 0 .75rem;
+        color: var(--ares-muted);
+        font-size: .82rem;
+        font-weight: 650;
+    }
+    .ares-story-card p {
+        margin: .4rem 0;
+        color: #334155;
+        font-size: .97rem;
+        line-height: 1.65;
+    }
+    .ares-story-label {
+        color: var(--ares-navy);
+        font-weight: 750;
+    }
+    .ares-story-criteria-title {
+        margin: 1rem 0 .35rem;
+        color: var(--ares-ink);
+        font-size: .95rem;
+        font-weight: 750;
+    }
+    .ares-story-criteria {
+        margin: .4rem 0 0;
+        padding-left: 1.35rem;
+        color: #334155;
+        line-height: 1.6;
+    }
+    .ares-story-criteria li { margin: .35rem 0; }
+    .ares-story-criteria strong { color: var(--ares-navy); }
+    .ares-story-empty { color: var(--ares-muted); font-style: italic; }
+    @media (max-width: 700px) {
+        .ares-story-card { padding: 1rem; }
+        .ares-story-card-header { gap: .55rem; }
+    }
+    .ares-loading-overlay {
+        position: fixed;
+        z-index: 9999;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        background: #e8f1ff;
+    }
+    .ares-loading-card {
+        display: flex;
+        min-width: 290px;
+        flex-direction: column;
+        align-items: center;
+        gap: 16px;
+        padding: 32px 38px;
+        border: 1px solid #bfdbfe;
+        border-radius: 20px;
+        background: #fff;
+        box-shadow: 0 18px 55px rgba(15, 23, 42, .14);
+        color: var(--ares-ink);
+        text-align: center;
+        font-weight: 650;
+    }
+    .ares-loader {
+        width: 42px;
+        height: 42px;
+        border: 4px solid #dbeafe;
+        border-top-color: var(--ares-blue);
+        border-radius: 50%;
+        animation: ares-spin .8s linear infinite;
+    }
+    @keyframes ares-spin { to { transform: rotate(360deg); } }
+    .ares-brand {
+        display: flex;
+        min-height: 158px;
+        align-items: center;
+        gap: 20px;
+        margin: 0 0 1.5rem;
+        padding: 1.55rem 1.75rem;
+        border: 1px solid rgba(30, 58, 138, .2);
+        border-radius: 20px;
+        background:
+            radial-gradient(ellipse at 85% 50%, rgba(96, 165, 250, .2), transparent 30rem),
+            linear-gradient(110deg, #0f172a, #1e3a8a);
+        box-shadow: 0 12px 32px rgba(30, 58, 138, .18);
+    }
+    .ares-brand-icon {
+        display: grid;
+        width: 68px;
+        height: 68px;
+        flex: 0 0 68px;
+        place-items: center;
+        border: 1px solid rgba(255, 255, 255, .28);
+        border-radius: 19px;
+        color: #fff;
+        background: linear-gradient(145deg, #60a5fa, #2563eb);
+        font-size: 31px;
+        box-shadow: 0 8px 22px rgba(2, 6, 23, .28);
+    }
+    .ares-brand-copy { min-width: 0; }
+    .ares-brand h1 {
+        margin: 0;
+        color: #fff !important;
+        font-size: clamp(2.1rem, 4vw, 2.8rem);
+        font-weight: 850 !important;
+        letter-spacing: .025em;
+        line-height: 1.1;
+    }
+    .ares-brand-expansion {
+        margin: .55rem 0 0;
+        color: #bfdbfe !important;
+        font-size: clamp(.98rem, 2vw, 1.08rem);
+        font-weight: 650;
+        line-height: 1.45;
+        text-shadow: 0 1px 4px rgba(15, 23, 42, .35);
+    }
+    .ares-card {
+        padding: 1.25rem 1.35rem;
+        border: 1px solid #dbe5e1;
+        border-radius: 18px;
+        background: #fff;
+        box-shadow: 0 8px 24px rgba(23, 52, 58, .055);
+    }
+    .ares-card h3 { margin: 0 0 .85rem; font-size: 1.12rem; }
+    .ares-step {
+        display: flex;
+        gap: 12px;
+        margin: .95rem 0;
+        color: var(--ares-ink);
+        line-height: 1.45;
+    }
+    .ares-step-number {
+        display: grid;
+        width: 26px;
+        height: 26px;
+        flex: 0 0 26px;
+        place-items: center;
+        border-radius: 50%;
+        color: #fff;
+        background: var(--ares-blue);
+        font-size: .82rem;
+        font-weight: 750;
+    }
+    .ares-step small { display: block; margin-top: 3px; color: var(--ares-muted); }
+    .ares-example {
+        margin-top: 1rem;
+        padding: .95rem;
+        border: 1px solid #f0dfc8;
+        border-radius: 12px;
+        background: #fff9ef;
+        color: var(--ares-ink);
+        font-size: .91rem;
+        line-height: 1.5;
+    }
+    .ares-example strong { color: var(--ares-navy); }
+    .ares-section-title {
+        margin: .35rem 0 .35rem;
+        color: var(--ares-ink);
+        font-size: 1.35rem;
+        font-weight: 750;
+    }
+    input::placeholder { color: #788b8d !important; opacity: 1; }
+    .ares-caption { margin: 0 0 1.15rem; color: var(--ares-muted) !important; }
+    @media (max-width: 700px) {
+        .block-container { padding: 1rem 1rem 2rem; }
+        .ares-brand { min-height: 0; gap: .85rem; padding: 1rem; }
+        .ares-brand-icon { width: 52px; height: 52px; flex-basis: 52px; font-size: 24px; }
+        .ares-brand-expansion { font-size: .9rem; }
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
 )
 
 # ---------------------------------------------------------
@@ -155,36 +565,11 @@ if not api_key:
 
 os.environ["OPENAI_API_KEY"] = api_key
 
-# ---------------------------------------------------------
-# EDITOR DE TEMPERATURA (barra lateral)
-# ---------------------------------------------------------
-TEMPERATURA_PADRAO = 0.0
-
-if "temperatura" not in st.session_state:
-    st.session_state["temperatura"] = TEMPERATURA_PADRAO
-
-def restaurar_temperatura():
-    st.session_state["temperatura"] = TEMPERATURA_PADRAO
-
-with st.sidebar:
-    st.header("⚙️ Configurações do Modelo")
-    temperatura = st.slider(
-        "🌡️ Temperatura da IA",
-        min_value=0.0,
-        max_value=2.0,
-        step=0.1,
-        key="temperatura",
-        help="Valores baixos geram respostas mais determinísticas; valores altos, mais criativas e variadas.",
-    )
-    st.button("↺ Restaurar padrão", on_click=restaurar_temperatura, use_container_width=True)
-
-    if temperatura > 1.0:
-        st.warning("Temperaturas acima de 1.0 podem quebrar o formato das seções e da matriz JSON.")
-    else:
-        st.caption(f"Temperatura atual: **{temperatura:.1f}**")
+# Mantém a geração determinística em todas as chamadas do modelo.
+TEMPERATURA_MODELO = 0.0
 
 # Ajustado max_tokens para permitir respostas longas do modelo
-llm = ChatOpenAI(model="gpt-4o-mini", temperature=temperatura, openai_api_key=api_key, max_tokens=8012)
+llm = ChatOpenAI(model="gpt-4o-mini", temperature=TEMPERATURA_MODELO, openai_api_key=api_key, max_tokens=8012)
 
 def get_response_from_openai(messages):
     return llm.invoke(messages)
@@ -438,24 +823,15 @@ def gerar_xlsx(info_execucao: dict) -> bytes:
     df_backlog, df_metricas, df_consolidacao = montar_tabelas_resultado(info_execucao)
     # O texto completo do backlog fica de fora: o Excel limita a célula a 32.767 caracteres
     # e a versão atual já está na aba Backlog RAG
-    df_refinamentos = tabela_refinamentos(info_execucao.get("id_execucao", "")).drop(
-        columns=["Backlog revisado (texto completo)"]
-    )
-
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         df_backlog.to_excel(writer, sheet_name="Backlog RAG", index=False)
         df_metricas.to_excel(writer, sheet_name="Métricas QUS-INVEST", index=False)
         df_consolidacao.to_excel(writer, sheet_name="Consolidação", index=False)
-        df_refinamentos.to_excel(writer, sheet_name="Refinamentos", index=False)
 
         _formatar_aba(writer.sheets["Backlog RAG"], {"A": 28, "B": 10, "C": 38, "D": 28, "E": 50, "F": 50, "G": 90})
         _formatar_aba(writer.sheets["Métricas QUS-INVEST"], {"A": 10, "B": 15, "C": 35, "D": 17, "E": 35})
         _formatar_aba(writer.sheets["Consolidação"], {"A": 38, "B": 70})
-        _formatar_aba(writer.sheets["Refinamentos"], {
-            "A": 20, "B": 16, "C": 60, "D": 10, "E": 10, "F": 22, "G": 22, "H": 22,
-            "I": 20, "J": 20, "K": 20, "L": 20, "M": 12, "N": 12, "O": 12, "P": 14, "Q": 10,
-        })
     return buffer.getvalue()
 
 # --- HISTÓRICO NO GOOGLE SHEETS ---
@@ -649,13 +1025,15 @@ K_GERACAO = 25
 FORMATO_HISTORIA = """FORMATO OBRIGATÓRIO PARA CADA HISTÓRIA:
 
 US-[NÚMERO] - [NOME ESPECÍFICO DA FUNCIONALIDADE]
-Como <Persona/Ator>,
-quero <Ação Única e Concreta com contexto do negócio>,
-para que <Benefício Direto e Métrica/Impacto do negócio>.
+Como administrador do sistema,
+quero uma ação única e concreta com contexto do negócio,
+para que haja um benefício direto para o negócio.
 
 Critérios de Aceitação:
 - CA1: [Detalhamento concreto da regra, campo, validação ou comportamento] (Origem: Trecho X)
 - CA2: [Detalhamento concreto da regra, campo, validação ou comportamento] (Origem: Trecho Y)
+
+Substitua o exemplo de persona pela persona específica de cada história. Não escreva sinais < ou > ao redor da persona, ação ou benefício.
 """
 
 @tool
@@ -1093,7 +1471,7 @@ NÃO reproduza histórias, tabelas ou relatórios na resposta final: a interface
 ])
 
 agent = create_openai_tools_agent(llm, toolkit, prompt)
-agent_executor = AgentExecutor(agent=agent, tools=toolkit, verbose=True, max_iterations=15)
+agent_executor = AgentExecutor(agent=agent, tools=toolkit, verbose=False, max_iterations=15)
 
 # --- AGENTE DO MODO REFINAMENTO ---
 # Toolkit próprio: sem indexação, análise normativa e geração, que não devem ser reexecutadas
@@ -1133,215 +1511,227 @@ NÃO reproduza histórias, tabelas ou relatórios na resposta final: a interface
 
 agent_refinamento = create_openai_tools_agent(llm, toolkit_refinamento, prompt_refinamento)
 agent_executor_refinamento = AgentExecutor(
-    agent=agent_refinamento, tools=toolkit_refinamento, verbose=True, max_iterations=6
+    agent=agent_refinamento, tools=toolkit_refinamento, verbose=False, max_iterations=6
 )
-
-# --- ACOMPANHAMENTO EM TEMPO REAL ---
-class PipelineProgressHandler(BaseCallbackHandler):
-    """
-    Exibe na tela cada passo do agente com o tempo gasto:
-    - chamadas das ferramentas (entrada e saída resumidas);
-    - chamadas do LLM orquestrador entre as ferramentas ("agente decidindo/escrevendo").
-    """
-
-    LIMITE_PREVIA = 1500
-
-    def __init__(self, container):
-        self.container = container
-        self.passo = 0
-        self.ferramenta_ativa = None
-        self.agente_ativo = None
-
-    def _previa(self, texto) -> str:
-        texto = str(texto)
-        if len(texto) > self.LIMITE_PREVIA:
-            return texto[: self.LIMITE_PREVIA] + f"\n\n… ({len(texto)} caracteres no total)"
-        return texto
-
-    def on_llm_start(self, serialized, prompts, **kwargs):
-        # Chamadas internas das ferramentas não entram aqui como passo separado
-        if self.ferramenta_ativa is None:
-            self.passo += 1
-            status = self.container.status(f"🧠 {self.passo}. Agente decidindo o próximo passo...", expanded=False)
-            self.agente_ativo = (status, time.time(), self.passo)
-
-    on_chat_model_start = on_llm_start
-
-    def on_llm_end(self, response, **kwargs):
-        if self.agente_ativo is not None and self.ferramenta_ativa is None:
-            status, inicio, passo = self.agente_ativo
-            tokens_saida = (response.llm_output or {}).get("token_usage", {}).get("completion_tokens")
-            info_tokens = f" · {tokens_saida} tokens escritos" if tokens_saida else ""
-            status.update(
-                label=f"🧠 {passo}. Agente decidiu o próximo passo — {time.time() - inicio:.1f}s{info_tokens}",
-                state="complete",
-            )
-            self.agente_ativo = None
-
-    def on_tool_start(self, serialized, input_str, **kwargs):
-        self.passo += 1
-        nome = (serialized or {}).get("name", "ferramenta")
-        status = self.container.status(f"⏳ {self.passo}. Executando {nome}...", expanded=True)
-        status.caption(f"Entrada enviada pelo agente ({len(str(input_str))} caracteres):")
-        status.code(self._previa(input_str), language=None)
-        self.ferramenta_ativa = (status, time.time(), self.passo, nome)
-
-    def on_tool_end(self, output, **kwargs):
-        if self.ferramenta_ativa is None:
-            return
-        status, inicio, passo, nome = self.ferramenta_ativa
-        status.caption(f"Saída da ferramenta ({len(str(output))} caracteres):")
-        status.code(self._previa(output), language=None)
-        status.update(label=f"✅ {passo}. {nome} — {time.time() - inicio:.1f}s", state="complete", expanded=False)
-        self.ferramenta_ativa = None
-
-    def on_tool_error(self, error, **kwargs):
-        if self.ferramenta_ativa is None:
-            return
-        status, inicio, passo, nome = self.ferramenta_ativa
-        status.error(str(error))
-        status.update(label=f"❌ {passo}. {nome} — erro após {time.time() - inicio:.1f}s", state="error")
-        self.ferramenta_ativa = None
 
 # --- INTERFACE DO STREAMLIT ---
 
-def renderizar_historico_refinamentos():
-    with st.expander(f"Histórico de refinamentos ({len(RESULTADOS['refinamentos'])})"):
-        for i, registro in enumerate(RESULTADOS["refinamentos"], start=1):
-            st.markdown(f"**{i}. {registro['data_hora']}** — _{registro['instrucao']}_")
-            st.caption(descrever_alteracoes(registro))
-            antes = historias_por_id(registro["antes"])
-            depois = historias_por_id(registro["depois"])
-            for id_us in registro["alterados"] + registro["criados"] + registro["removidos"]:
-                col_antes, col_depois = st.columns(2)
-                with col_antes:
-                    st.markdown(f"**Antes — {id_us}**")
-                    st.markdown(markdown_com_quebras(antes.get(id_us, "_(não existia)_")))
-                with col_depois:
-                    st.markdown(f"**Depois — {id_us}**")
-                    st.markdown(markdown_com_quebras(depois.get(id_us, "_(removida)_")))
-            st.markdown("---")
+def renderizar_card_historia(id_us: str, titulo: str, modulo: str | None, texto: str):
+    linhas = formatar_historias(texto).splitlines()
+    corpo = []
+    criterios = []
+    em_criterios = False
 
-def renderizar_refinamento(info_execucao: dict):
-    st.subheader("✏️ Refinar histórias")
-    instrucao_refinamento = st.text_area(
-        "Descreva o que deve ser corrigido ou melhorado",
-        key="instrucao_refinamento",
-        placeholder="Ex.: divida a US-004 em duas; detalhe os critérios de aceitação da US-010; troque a persona 'usuário' por 'advogado'",
+    for linha in linhas:
+        texto_linha = linha.replace("**", "").strip().strip("*").strip()
+        if re.match(r"^(Como|Quero|Para que)\s*:?", texto_linha, re.IGNORECASE):
+            texto_linha = re.sub(r"<\s*([^<>]+?)\s*>", r"\1", texto_linha)
+        if not texto_linha:
+            continue
+        if re.fullmatch(r"[-—–\s]+", texto_linha):
+            continue
+        if re.match(r"^Critérios de Aceitação\s*:?", texto_linha, re.IGNORECASE):
+            em_criterios = True
+            restante = re.sub(
+                r"^Critérios de Aceitação\s*:?\s*",
+                "",
+                texto_linha,
+                flags=re.IGNORECASE,
+            ).strip()
+            if restante:
+                criterios.append(restante)
+            continue
+
+        match_ca = re.match(r"^-?\s*(CA\s*\d+)\s*:\s*(.*)$", texto_linha, re.IGNORECASE)
+        if match_ca:
+            em_criterios = True
+            criterios.append(f"{match_ca.group(1).upper()}: {match_ca.group(2).strip()}")
+        elif em_criterios:
+            criterios.append(texto_linha)
+        else:
+            corpo.append(texto_linha)
+
+    paragrafos = []
+    for linha in corpo:
+        match_persona = re.match(r"^(Como|Quero|Para que)\s*:?\s*(.*)$", linha, re.IGNORECASE)
+        if match_persona:
+            rotulo = html.escape(match_persona.group(1).capitalize())
+            valor_persona = re.sub(r"<\s*([^<>]+?)\s*>", r"\1", match_persona.group(2))
+            conteudo = html.escape(valor_persona)
+            paragrafos.append(
+                f'<p><span class="ares-story-label">{rotulo}</span> {conteudo}</p>'
+            )
+        else:
+            paragrafos.append(f"<p>{html.escape(linha)}</p>")
+
+    criterio_html = ""
+    if criterios:
+        itens = []
+        for criterio in criterios:
+            match_ca = re.match(r"^(CA\s*\d+)\s*:\s*(.*)$", criterio, re.IGNORECASE)
+            if match_ca:
+                itens.append(
+                    f"<li><strong>{html.escape(match_ca.group(1).upper())}:</strong> "
+                    f"{html.escape(match_ca.group(2))}</li>"
+                )
+            else:
+                itens.append(f"<li>{html.escape(criterio)}</li>")
+        criterio_html = (
+            '<div class="ares-story-criteria-title">Critérios de aceitação</div>'
+            f'<ul class="ares-story-criteria">{"".join(itens)}</ul>'
+        )
+
+    titulo_limpo = titulo.replace("**", "").strip().strip("*").strip()
+    titulo_html = html.escape(titulo_limpo) if titulo_limpo else "História de usuário"
+    modulo_html = (
+        f'<div class="ares-story-module">Módulo: {html.escape(modulo)}</div>'
+        if modulo
+        else ""
     )
-    st.caption("Pressione Ctrl+Enter ou clique fora da caixa para habilitar o botão.")
-    if st.button(
-        "🔁 Reprocessar com este prompt",
-        use_container_width=True,
-        disabled=not RESULTADOS["historias"] or not instrucao_refinamento.strip(),
-    ):
-        executar_refinamento(instrucao_refinamento.strip(), info_execucao)
+    conteudo_html = "".join(paragrafos) or '<p class="ares-story-empty">Sem descrição.</p>'
+    card_html = textwrap.dedent(
+        f"""
+        <article class="ares-story-card">
+            <header class="ares-story-card-header">
+                <span class="ares-story-id">{html.escape(id_us)}</span>
+                <div class="ares-story-title">{titulo_html}</div>
+            </header>
+            {modulo_html}
+            <div class="ares-story-body">{conteudo_html}</div>
+            {criterio_html}
+        </article>
+        """,
+    ).strip()
+    st.html(card_html)
 
 def renderizar_resultados(info_execucao: dict):
-    """Exibe a exportação e as abas de resultado a partir de RESULTADOS (chamada em todo rerun)."""
-    # Reservado no topo, mas preenchido no fim: um refinamento feito neste rerun já entra no .xlsx
-    area_download = st.container()
-
-    tab0, tab1, tab2, tab3, tab4 = st.tabs([
-        "📋 Análise Normativa & Lacunas",
-        "📌 Backlog Ancorado (RAG)",
-        "📊 Métricas de Qualidade (QUS/INVEST)",
-        "🔍 Validação Semântica & Cobertura",
-        "⚡ Desempenho & Recursos"
-    ])
-
-    with tab0:
-        st.header("📋 Análise Normativa e Detecção de Omissões no Documento")
-        conteudo_normativa = RESULTADOS["analise_normativa"] or "_A análise normativa não foi executada._"
-        st.markdown(conteudo_normativa.strip())
-        for i, relatorio_lacunas in enumerate(RESULTADOS["lacunas"], start=1):
-            with st.expander(f"Verificação de lacunas — rodada {i}"):
-                st.markdown(relatorio_lacunas)
-    with tab1:
-        st.header("📌 Backlog de User Stories Gerado")
-        # O backlog fica acima do refinamento, mas só é desenhado depois dele: um refinamento
-        # feito neste rerun já aparece no backlog e nas demais abas
-        area_backlog = st.container()
-        st.markdown("---")
-        renderizar_refinamento(info_execucao)
-        with area_backlog:
-            st.caption(f"{len(ids_no_backlog())} histórias no backlog")
-            if RESULTADOS["refinamentos"]:
-                renderizar_historico_refinamentos()
-            conteudo_us = backlog_completo() or "_Nenhuma história gerada._"
-            st.markdown(markdown_com_quebras(formatar_historias(conteudo_us.strip())))
-
-    conteudo_metricas = montar_secao_metricas() if (RESULTADOS["qus"] or RESULTADOS["invest"]) else "_As avaliações QUS/INVEST não foram executadas._"
-    conteudo_semantica = RESULTADOS["semantica"] or "_A validação semântica não foi executada._"
-    conteudo_cobertura = RESULTADOS["cobertura"]
-
-    with tab2:
-        st.header("📊 Métricas e Auditoria Qualitativa (Estrutura e Sintaxe)")
-        st.markdown(conteudo_metricas.strip())
-
-    with tab3:
-        st.header("🔍 Relatório do Avaliador (Aderência de Escopo e Semântica)")
+    """Renderiza os resultados em três abas com backlog organizado em cards."""
+    quantidade_historias = len(ids_no_backlog())
+    col_titulo, col_exportar, col_voltar = st.columns([3, 1.5, 1.1])
+    with col_titulo:
+        st.markdown('<div class="ares-section-title">✨ Resultados do projeto</div>', unsafe_allow_html=True)
         st.markdown(
-            """
-            <style>
-            section[data-testid="stMarkdownContainer"] table { width: 100%; }
-            section[data-testid="stMarkdownContainer"] th { background-color: #1E293B; color: white; text-align: center; }
-            section[data-testid="stMarkdownContainer"] td { vertical-align: top; white-space: pre-wrap; }
-            </style>
-            """,
+            f'<p class="ares-caption">{quantidade_historias} histórias geradas · '
+            "Backlog, análises e desempenho em áreas separadas.</p>",
             unsafe_allow_html=True,
         )
-        st.markdown("#### 1. Relatório de Validação de Domínio e Nexo Semântico")
-        st.markdown(conteudo_semantica.strip())
-
-        st.markdown("#### 2. Matriz de Cobertura de Requisitos")
-        if not conteudo_cobertura:
-            st.markdown("_A matriz de cobertura não foi executada._")
-        else:
-            try:
-                json_limpo = re.sub(r'^```(?:json)?\s*|\s*```$', '', conteudo_cobertura.strip())
-                st.dataframe(json.loads(json_limpo), use_container_width=True)
-            except ValueError:
-                st.markdown(conteudo_cobertura)
-
-    with tab4:
-        st.header("⚡ Desempenho Técnico do Pipeline")
-        col1, col2, col3 = st.columns(3)
-
-        with col1:
-            st.metric(label="⏱ Tempo Total de Execução", value=f"{info_execucao['tempo_s']:.2f} s")
-            st.metric(label="💾 Consumo de Memória de Pico", value=f"{info_execucao['memoria_pico_mb']:.2f} MB")
-
-        with col2:
-            st.metric(label="📥 Tokens de Entrada (Prompt)", value=f"{info_execucao['tokens_entrada']}")
-            st.metric(label="📤 Tokens de Saída (Completion)", value=f"{info_execucao['tokens_saida']}")
-
-        with col3:
-            st.metric(label="🔢 Total de Tokens", value=f"{info_execucao['tokens_total']}")
-            st.metric(label="💵 Custo Real (gpt-4o-mini)", value=f"${info_execucao['custo_usd']:.5f} USD")
-            st.metric(label="🌡️ Temperatura Utilizada", value=f"{info_execucao['temperatura']:.1f}")
-
-        if RESULTADOS["refinamentos"]:
-            st.markdown("#### 🔁 Refinamentos")
-            colunas = ["Data/hora", "Instrução", "Histórias antes", "Histórias depois", "QUS antes", "QUS depois",
-                       "INVEST antes", "INVEST depois", "Tokens de entrada", "Tokens de saída",
-                       "Custo estimado (USD)", "Tempo (s)"]
-            st.dataframe(
-                tabela_refinamentos(info_execucao.get("id_execucao", ""))[colunas],
-                use_container_width=True,
-                hide_index=True,
-            )
 
     if RESULTADOS["historias"]:
-        with area_download:
+        with col_exportar:
             st.download_button(
-                "📥 Exportar Backlog RAG e Métricas de Qualidade (.xlsx)",
+                "📥 Exportar backlog e métricas (.xlsx)",
                 data=gerar_xlsx(info_execucao),
                 file_name=f"backlog_metricas_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                on_click="ignore",  # não reexecuta o app: os resultados continuam na tela após o download
+                on_click="ignore",
                 use_container_width=True,
             )
+    with col_voltar:
+        if st.button("← Voltar ao formulário", use_container_width=True):
+            st.session_state.pop("info_execucao", None)
+            st.rerun()
+
+    tela_ativa = st.segmented_control(
+        "Seção de resultados",
+        options=["backlog", "analises", "desempenho"],
+        format_func={
+            "backlog": ":material/view_kanban: Backlog",
+            "analises": ":material/analytics: Análises",
+            "desempenho": ":material/speed: Desempenho",
+        }.get,
+        default="backlog",
+        key="ares_tela_resultados",
+        label_visibility="collapsed",
+        width="stretch",
+    )
+
+    if tela_ativa == "backlog":
+        st.markdown("### Histórias de usuário")
+        st.caption(f"{quantidade_historias} histórias · geradas a partir do documento de escopo")
+        segmentos = segmentar_backlog(backlog_completo())
+        modulo_atual = None
+        historias_renderizadas = 0
+
+        for id_us, texto_historia in segmentos:
+            if id_us is None:
+                modulo = PADRAO_MODULO.match(texto_historia.splitlines()[0])
+                if modulo:
+                    modulo_atual = modulo.group(1).strip()
+                    st.markdown(f"#### Módulo: {modulo_atual}")
+                continue
+
+            linhas = texto_historia.splitlines()
+            titulo = ""
+            if linhas:
+                match_titulo = PADRAO_TITULO_US.match(linhas[0])
+                if match_titulo:
+                    titulo = match_titulo.group(2).strip()
+                    linhas = linhas[1:]
+            renderizar_card_historia(id_us, titulo, modulo_atual, "\n".join(linhas))
+            historias_renderizadas += 1
+
+        if historias_renderizadas == 0:
+            st.info("Nenhuma história gerada ainda. Execute a geração na página inicial.")
+
+    if tela_ativa == "analises":
+        st.markdown("### Análises e qualidade")
+        col_normativa, col_lacunas = st.columns(2)
+        with col_normativa:
+            with st.container(border=True, key="ares-analysis-normative"):
+                st.markdown("#### :material/rule: Análise normativa")
+                conteudo_normativa = RESULTADOS["analise_normativa"] or "_A análise normativa não foi executada._"
+                st.markdown(conteudo_normativa.strip())
+        with col_lacunas:
+            with st.container(border=True, key="ares-analysis-gaps"):
+                st.markdown("#### :material/search: Lacunas identificadas")
+                if RESULTADOS["lacunas"]:
+                    for i, relatorio_lacunas in enumerate(RESULTADOS["lacunas"], start=1):
+                        st.markdown(f"**Rodada {i}**")
+                        st.markdown(relatorio_lacunas)
+                else:
+                    st.info("Nenhuma rodada de análise de lacunas foi registrada.")
+
+        with st.container(border=True, key="ares-analysis-quality"):
+            st.markdown("#### :material/verified: Qualidade das histórias (QUS e INVEST)")
+            conteudo_metricas = montar_secao_metricas() if (RESULTADOS["qus"] or RESULTADOS["invest"]) else "_As avaliações QUS/INVEST não foram executadas._"
+            st.markdown(conteudo_metricas.strip())
+
+        col_semantica, col_cobertura = st.columns(2)
+        with col_semantica:
+            with st.container(border=True, key="ares-analysis-semantic"):
+                st.markdown("#### :material/hub: Consistência semântica")
+                st.markdown(RESULTADOS["semantica"] or "_A validação semântica não foi executada._")
+        with col_cobertura:
+            with st.container(border=True, key="ares-analysis-coverage"):
+                st.markdown("#### :material/account_tree: Cobertura de requisitos")
+                conteudo_cobertura = RESULTADOS["cobertura"]
+                if not conteudo_cobertura:
+                    st.info("A matriz de cobertura não foi executada.")
+                else:
+                    try:
+                        json_limpo = re.sub(r'^```(?:json)?\s*|\s*```$', '', conteudo_cobertura.strip())
+                        st.dataframe(json.loads(json_limpo), use_container_width=True, hide_index=True)
+                    except ValueError:
+                        st.markdown(conteudo_cobertura)
+
+    if tela_ativa == "desempenho":
+        st.markdown("### Resumo da execução")
+        qus = extrair_notas(RESULTADOS["qus"], 7)
+        invest = extrair_notas(RESULTADOS["invest"], 6)
+        qus_media = sum(nota for nota, _ in qus.values()) / len(qus) if qus else None
+        invest_media = sum(nota for nota, _ in invest.values()) / len(invest) if invest else None
+        col_historias, col_qus, col_invest, col_custo = st.columns(4)
+        col_historias.metric("Histórias geradas", quantidade_historias)
+        col_qus.metric("Pontuação média QUS", f"{qus_media:.1f}/7" if qus_media is not None else "—")
+        col_invest.metric("Pontuação média INVEST", f"{invest_media:.1f}/6" if invest_media is not None else "—")
+        col_custo.metric("Custo estimado", f"${info_execucao['custo_usd']:.5f} USD")
+
+        col_tempo, col_memoria, col_tokens = st.columns(3)
+        col_tempo.metric("Tempo total", f"{info_execucao['tempo_s']:.2f} s")
+        col_memoria.metric("Memória de pico", f"{info_execucao['memoria_pico_mb']:.2f} MB")
+        col_tokens.metric("Tokens utilizados", info_execucao["tokens_total"])
+
+        st.caption(f"Temperatura fixa do modelo: {info_execucao['temperatura']:.1f}")
 
 def executar_refinamento(instrucao: str, info_execucao: dict):
     """Executa o agente no modo refinamento e registra o resultado (histórico e Google Sheets)."""
@@ -1349,9 +1739,6 @@ def executar_refinamento(instrucao: str, info_execucao: dict):
     historias_antes = len(ids_no_backlog())
     qus_antes, invest_antes = totais_qus_invest()
     tempo_inicial = time.time()
-
-    st.markdown("#### 🛰️ Refinamento em tempo real")
-    st_callback = PipelineProgressHandler(st.container())
 
     with st.spinner("O Agente está aplicando as correções e reavaliando o backlog... Aguarde."):
         with get_openai_callback() as cb:
@@ -1362,8 +1749,7 @@ def executar_refinamento(instrucao: str, info_execucao: dict):
                             "Refine o backlog atual conforme a instrução do usuário abaixo e reavalie as métricas "
                             f"semântica, de cobertura, QUS e INVEST.\n\nINSTRUÇÃO DO USUÁRIO:\n{instrucao}"
                         )
-                    },
-                    config={"callbacks": [st_callback]},
+                    }
                 )
             except Exception as e:
                 st.error(f"Ocorreu um erro durante o refinamento: {e}")
@@ -1388,89 +1774,141 @@ def executar_refinamento(instrucao: str, info_execucao: dict):
         "qus_depois": qus_depois,
         "invest_antes": invest_antes,
         "invest_depois": invest_depois,
-        "temperatura": temperatura,
+        "temperatura": TEMPERATURA_MODELO,
         "tokens_entrada": cb.prompt_tokens,
         "tokens_saida": cb.completion_tokens,
         "custo_usd": calcular_custo(cb),
         "tempo_s": time.time() - tempo_inicial,
     })
-    st.success(f"Refinamento concluído! {result['output']}")
+    st.success("Refinamento concluído!")
 
     # Histórico automático: falhas aqui não interrompem a exibição dos resultados
     try:
-        with st.spinner("Salvando o refinamento no Google Sheets..."):
-            salvar_refinamento_no_google_sheets(info_execucao.get("id_execucao", ""), registro)
-        st.info("📚 Refinamento salvo no Google Sheets (aba Refinamentos).")
-    except Exception as erro_sheets:
-        st.warning(f"Não foi possível salvar o refinamento no Google Sheets: {erro_sheets}")
+        salvar_refinamento_no_google_sheets(info_execucao.get("id_execucao", ""), registro)
+    except Exception:
+        LOGGER.exception("Falha ao salvar o refinamento no Google Sheets.")
 
-st.title("Geração de Histórias de Usuário - UFF")
-st.subheader("Agentes Multi-Ferramentas")
-st.markdown("---")
+area_inicio = st.empty()
+iniciar_pipeline = False
+if "info_execucao" not in st.session_state:
+    with area_inicio.container():
+        erro_pipeline = st.session_state.pop("ares_pipeline_error", None)
+        if erro_pipeline:
+            st.error(erro_pipeline)
+        st.markdown(
+            """
+            <div class="ares-brand">
+                <div class="ares-brand-icon">✦</div>
+                <div class="ares-brand-copy">
+                    <h1>ARES</h1>
+                    <p class="ares-brand-expansion">Automated Requirements &amp; User Story Engineering System</p>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        col_orientacao, col_geracao = st.columns([1.1, 1.9], gap="large")
+        with col_orientacao:
+            st.markdown(
+                """
+                <div class="ares-card">
+                    <h3>🧭 Como funciona</h3>
+                    <div class="ares-step"><span class="ares-step-number">1</span><div><strong>Informe o escopo</strong><small>Use um documento público com as regras e objetivos do projeto.</small></div></div>
+                    <div class="ares-step"><span class="ares-step-number">2</span><div><strong>Gere as histórias</strong><small>O ARES analisa requisitos e cria um backlog rastreável.</small></div></div>
+                    <div class="ares-step"><span class="ares-step-number">3</span><div><strong>Revise e exporte</strong><small>Consulte as avaliações e baixe o backlog em Excel.</small></div></div>
+                    <div class="ares-example"><strong>O que será avaliado</strong><br>Rastreabilidade · Qualidade QUS/INVEST · Consistência semântica</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
-url_padrao = "https://docs.google.com/document/d/e/2PACX-1vTwj4Yh9UVPzqEpHJMprp875O7bW6XRQek_JNl-1ZxriLWvXvWInIxlxaYY4-yTRRTvxNIvUSPkuFbm/pub"
-url_documento = st.text_input("Cole aqui a URL pública do documento de escopo (Google Docs publicado na Web ou site):", value=url_padrao)
+        with col_geracao:
+            st.markdown('<div class="ares-section-title">Comece pelo documento do projeto</div>', unsafe_allow_html=True)
+            st.markdown(
+                '<p class="ares-caption">O ARES usa o escopo como fonte para gerar histórias completas e rastreáveis.</p>',
+                unsafe_allow_html=True,
+            )
+            url_documento = st.text_input(
+                "URL pública do documento de escopo",
+                placeholder="Ex.: https://docs.google.com/document/d/ID_DO_DOCUMENTO/pub",
+                help="Cole a URL de um Google Docs publicado na Web ou de uma página acessível publicamente.",
+                key="url_documento",
+            )
+            st.caption("💡 Use um documento público para que o ARES consiga ler os requisitos do projeto.")
+            iniciar_pipeline = st.button(
+                "✨ Gerar histórias de usuário",
+                use_container_width=True,
+                disabled=not url_documento.strip(),
+            )
+else:
+    url_documento = st.session_state.get("url_documento", "")
 
-if st.button("🚀 Iniciar Pipeline de IA", use_container_width=True):
+if iniciar_pipeline:
+    area_inicio.empty()
+    area_carregamento = st.empty()
+    area_carregamento.markdown(
+        """
+        <div class="ares-loading-overlay">
+            <div class="ares-loading-card">
+                <div class="ares-loader"></div>
+                <div>Gerando histórias com o ARES…</div>
+                <small>Este processo pode levar alguns minutos. Estamos analisando o documento e validando a cobertura.</small>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
     tracemalloc.start()
     tempo_inicial = time.time()
 
-    # Acompanhamento em tempo real: cada ferramenta chamada pelo agente aparece abaixo com entrada e saída
-    st.markdown("#### 🛰️ Execução em tempo real")
-    st_callback = PipelineProgressHandler(st.container())
     novo_estado_execucao()
     VECTOR_STORE = None
     st.session_state.pop("vector_store", None)
     st.session_state.pop("info_execucao", None)
 
-    with st.spinner("O Agente está processando o documento, mapeando todos os módulos e gerando o backlog completo... Aguarde."):
+    try:
         with get_openai_callback() as cb:
-            try:
-                result = agent_executor.invoke(
-                    {
-                        "input": f"Execute todo o pipeline de engenharia de requisitos com auditoria semântica, de cobertura, QUS e INVEST para o projeto em: {url_documento}"
-                    },
-                    config={"callbacks": [st_callback]},
-                )
-
-                tempo_final = time.time()
-                memoria_atual, memoria_pico = tracemalloc.get_traced_memory()
-                tracemalloc.stop()
-
-                # Guardados para os próximos reruns (refinamento, troca de aba, download)
-                st.session_state["vector_store"] = VECTOR_STORE
-                info_execucao = {
-                    "id_execucao": novo_id_execucao(),
-                    "data_hora": datetime.now().strftime("%d/%m/%Y %H:%M"),
-                    "url": url_documento,
-                    "temperatura": temperatura,
-                    "tempo_s": tempo_final - tempo_inicial,
-                    "memoria_pico_mb": memoria_pico / (1024 * 1024),
-                    "tokens_entrada": cb.prompt_tokens,
-                    "tokens_saida": cb.completion_tokens,
-                    "tokens_total": cb.total_tokens,
-                    "custo_usd": calcular_custo(cb),
+            result = agent_executor.invoke(
+                {
+                    "input": f"Execute todo o pipeline de engenharia de requisitos com auditoria semântica, de cobertura, QUS e INVEST para o projeto em: {url_documento}"
                 }
-                st.session_state["info_execucao"] = info_execucao
+            )
 
-                # Os conteúdos vêm direto das ferramentas (RESULTADOS), não da resposta final do agente
-                if not RESULTADOS["historias"]:
-                    st.warning(f"O pipeline terminou sem gerar histórias. Resposta do agente:\n\n{result['output']}")
-                else:
-                    st.success(f"Processamento Concluído com Sucesso! {result['output']}")
+        tempo_final = time.time()
+        _, memoria_pico = tracemalloc.get_traced_memory()
+        st.session_state["vector_store"] = VECTOR_STORE
+        info_execucao = {
+            "id_execucao": novo_id_execucao(),
+            "data_hora": datetime.now().strftime("%d/%m/%Y %H:%M"),
+            "url": url_documento,
+            "temperatura": TEMPERATURA_MODELO,
+            "tempo_s": tempo_final - tempo_inicial,
+            "memoria_pico_mb": memoria_pico / (1024 * 1024),
+            "tokens_entrada": cb.prompt_tokens,
+            "tokens_saida": cb.completion_tokens,
+            "tokens_total": cb.total_tokens,
+            "custo_usd": calcular_custo(cb),
+        }
+        st.session_state["info_execucao"] = info_execucao
 
-                    # Histórico automático: falhas aqui não interrompem a exibição dos resultados
-                    try:
-                        with st.spinner("Salvando o resultado no Google Sheets..."):
-                            id_execucao = salvar_no_google_sheets(info_execucao)
-                        st.info(f"📚 Resultado salvo no Google Sheets (execução {id_execucao}).")
-                    except Exception as erro_sheets:
-                        st.warning(f"Não foi possível salvar no Google Sheets: {erro_sheets}")
+        if not RESULTADOS["historias"]:
+            st.warning(f"O pipeline terminou sem gerar histórias. Resposta do agente:\n\n{result['output']}")
+        else:
+            st.success("Processamento concluído!")
+            try:
+                salvar_no_google_sheets(info_execucao)
+            except Exception:
+                LOGGER.exception("Falha ao salvar a execução no Google Sheets.")
 
-            except Exception as e:
-                st.error(f"Ocorreu um erro durante a execução do agente: {e}")
+    except Exception as e:
+        st.session_state["ares_pipeline_error"] = f"Ocorreu um erro durante a execução do agente: {e}"
+    finally:
+        if tracemalloc.is_tracing():
+            tracemalloc.stop()
+        area_carregamento.empty()
+    if "info_execucao" not in st.session_state:
+        st.rerun()
 
-# Resultados ficam fora do if do botão para continuarem na tela em qualquer rerun
-# (o refinamento fica dentro da aba do backlog)
+# Os resultados ficam fora do botão para continuarem disponíveis após cada rerun.
 if "info_execucao" in st.session_state:
     renderizar_resultados(st.session_state["info_execucao"])
