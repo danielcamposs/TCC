@@ -1801,7 +1801,7 @@ if "info_execucao" not in st.session_state:
                 <div class="ares-brand-icon">✦</div>
                 <div class="ares-brand-copy">
                     <h1>UStory.AI</h1>
-                    <p class="ares-brand-expansion">Engenharia de histórias de usuário com inteligência artificial</p>
+                    <p class="ares-brand-expansion">Histórias de usuário com inteligência artificial</p>
                 </div>
             </div>
             """,
@@ -1814,7 +1814,7 @@ if "info_execucao" not in st.session_state:
                 <div class="ares-card">
                     <h3>🧭 Como funciona</h3>
                     <div class="ares-step"><span class="ares-step-number">1</span><div><strong>Informe o escopo</strong><small>Use um documento público com as regras e objetivos do projeto.</small></div></div>
-                    <div class="ares-step"><span class="ares-step-number">2</span><div><strong>Gere as histórias</strong><small>O UStory.AI analisa requisitos e cria um backlog rastreável.</small></div></div>
+                    <div class="ares-step"><span class="ares-step-number">2</span><div><strong>Gere as histórias</strong><small>A UStory.AI analisa requisitos e cria um backlog rastreável.</small></div></div>
                     <div class="ares-step"><span class="ares-step-number">3</span><div><strong>Revise e exporte</strong><small>Consulte as avaliações e baixe o backlog em Excel.</small></div></div>
                     <div class="ares-example"><strong>O que será avaliado</strong><br>Rastreabilidade · Qualidade QUS/INVEST · Consistência semântica</div>
                 </div>
@@ -1825,7 +1825,7 @@ if "info_execucao" not in st.session_state:
         with col_geracao:
             st.markdown('<div class="ares-section-title">Comece pelo documento do projeto</div>', unsafe_allow_html=True)
             st.markdown(
-                '<p class="ares-caption">O UStory.AI usa o escopo como fonte para gerar histórias completas e rastreáveis.</p>',
+                '<p class="ares-caption">A UStory.AI usa o escopo como fonte para gerar histórias completas e rastreáveis.</p>',
                 unsafe_allow_html=True,
             )
             url_documento = st.text_input(
@@ -1834,7 +1834,7 @@ if "info_execucao" not in st.session_state:
                 help="Cole a URL de um Google Docs publicado na Web ou de uma página acessível publicamente.",
                 key="url_documento",
             )
-            st.caption("💡 Use um documento público para que o UStory.AI consiga ler os requisitos do projeto.")
+            st.caption("💡 Use um documento público para que a UStory.AI consiga ler os requisitos do projeto.")
             iniciar_pipeline = st.button(
                 "✨ Gerar histórias de usuário",
                 use_container_width=True,
@@ -1851,7 +1851,7 @@ if iniciar_pipeline:
         <div class="ares-loading-overlay">
             <div class="ares-loading-card">
                 <div class="ares-loader"></div>
-                <div>Gerando histórias com o UStory.AI…</div>
+                <div>Gerando histórias com a UStory.AI…</div>
                 <small>Este processo pode levar alguns minutos. Estamos analisando o documento e validando a cobertura.</small>
             </div>
         </div>
