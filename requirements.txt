@@ -1,4 +1,4 @@
-streamlit>=1.25.0
+streamlit==1.59.2
 python-dotenv
 beautifulsoup4
 faiss-cpu
