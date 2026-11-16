@@ -65,8 +65,8 @@ A aplicação é desenvolvida integralmente em **Python**, utilizando **Streamli
 
 ### 1. Clonar o Repositório
 ```bash
-git clone [https://github.com/n2Gabrielle/UStory.IA.git](https://github.com/n2Gabrielle/UStory.IA.git)
-cd UStory.IA
+git clone https://github.com/danielcampospos/TCC.git
+cd TCC
 ```
 
 ### 2. Criar e Ativar o Ambiente Virtual
