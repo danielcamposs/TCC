@@ -102,7 +102,7 @@ streamlit run app.py
 
 ---
 
-## 📦 Disponibilidade de Artefatos (*Artifact Availability*)
+## 📦 Disponibilidade de Artefatos
 Todos os artefatos utilizados e produzidos durante o experimento, incluindo o código-fonte da ferramenta **UStory.IA**, os instrumentos dos questionários de avaliação (TAM, AV01, AV02 e AV03) e os recursos de suporte, encontram-se publicamente disponíveis neste repositório e nos links oficiais. A ferramenta web interativa também está acessível em: [https://use-story-generation.streamlit.app/](https://use-story-generation.streamlit.app/).
 
 ---
