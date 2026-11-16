@@ -11,12 +11,12 @@ O sistema integra técnicas avançadas de Geração Aumentada por Recuperação 
 ---
 
 ## 🔗 Links e Avaliação
-* **📝 Formulário de Avaliação (TAM):** [Acessar Formulário TAM](https://docs.google.com/forms/d/e/1FAIpQLScXBCVIn4Big93odLjCgknyBbtWauECcO7YUaDN5qUJjeLbfw/viewform?usp=header)
-* **📋 Formulários de Avaliação de Qualidade das Histórias de Usuário:**
+- **📝 Formulário de Avaliação (TAM):** [Acessar Formulário TAM](https://docs.google.com/forms/d/e/1FAIpQLScXBCVIn4Big93odLjCgknyBbtWauECcO7YUaDN5qUJjeLbfw/viewform?usp=header)
+- **📋 Formulários de Avaliação de Qualidade das Histórias de Usuário:**
   * **AV01:** [Acessar Formulário AV01](https://docs.google.com/forms/d/e/1FAIpQLSf7FoJTXSSaTAOscF2CkjC3gKCVk3zcMCefOChmH-5dUvnNqA/viewform?usp=header)
   * **AV02:** [Acessar Formulário AV02](https://docs.google.com/forms/d/e/1FAIpQLScchIEDPf2GSF4kOMiPjVfRwy3Oo9r1nFcP1rvbzlGfDJaQYw/viewform?usp=header)
   * **AV03:** [Acessar Formulário AV03](https://docs.google.com/forms/d/e/1FAIpQLScpZX8XHrI2ALrBkGtp7rwfheezWrXC_kqEyjfHz8F--hHWiQ/viewform?usp=header)
-* **🌐 Aplicação Web (Streamlit):** [https://use-story-generation.streamlit.app/](https://use-story-generation.streamlit.app/)
+- **🌐 Aplicação Web (Streamlit):** [https://use-story-generation.streamlit.app/](https://use-story-generation.streamlit.app/)
 
 ---
 
@@ -74,12 +74,12 @@ cd UStory.IA
 python -m venv .venv
 ```
 
-* **Windows (PowerShell):**
+- **Windows (PowerShell):**
 ```powershell
 .venv\Scripts\Activate.ps1
 ```
 
-* **Linux / macOS:**
+- **Linux / macOS:**
 ```bash
 source .venv/bin/activate
 ```
@@ -102,16 +102,21 @@ streamlit run app.py
 
 ---
 
+## 📦 Disponibilidade de Artefatos (*Artifact Availability*)
+Todos os artefatos utilizados e produzidos durante o experimento, incluindo o código-fonte da ferramenta **UStory.IA**, os instrumentos dos questionários de avaliação (TAM, AV01, AV02 e AV03) e os recursos de suporte, encontram-se publicamente disponíveis neste repositório e nos links oficiais. A ferramenta web interativa também está acessível em: [https://use-story-generation.streamlit.app/](https://use-story-generation.streamlit.app/).
+
+---
+
 ## 👥 Autores e Orientação
 
-* **Daniel Izu Campos** — *Discente / Autor*  
+- **Daniel Izu Campos** — *Discente / Autor*  
   Instituto de Computação — Universidade Federal Fluminense (UFF)
-* **Gabrielle de Oliveira Silva Rosa** — *Discente / Autora*  
+- **Gabrielle de Oliveira Silva Rosa** — *Discente / Autora*  
   Instituto de Computação — Universidade Federal Fluminense (UFF)  
-* ** Rebeca Campos Motta** — *Orientadora*  
+- **Rebeca Campos Motta** — *Orientadora*  
   Instituto de Computação — Universidade Federal Fluminense (UFF)
 
 ---
 
 ## 🏛️ Instituição
-* **Instituição:** Instituto de Computação (IC) — Universidade Federal Fluminense (UFF), Niterói, RJ, Brasil (https://www.ic.uff.br/)
+- **Instituição:** Instituto de Computação (IC) — Universidade Federal Fluminense (UFF), Niterói, RJ, Brasil (https://www.ic.uff.br/)
