@@ -16,6 +16,7 @@ O sistema integra técnicas avançadas de Geração Aumentada por Recuperação 
   * **AV01:** [Acessar Formulário AV01](https://docs.google.com/forms/d/e/1FAIpQLSf7FoJTXSSaTAOscF2CkjC3gKCVk3zcMCefOChmH-5dUvnNqA/viewform?usp=header)
   * **AV02:** [Acessar Formulário AV02](https://docs.google.com/forms/d/e/1FAIpQLScchIEDPf2GSF4kOMiPjVfRwy3Oo9r1nFcP1rvbzlGfDJaQYw/viewform?usp=header)
   * **AV03:** [Acessar Formulário AV03](https://docs.google.com/forms/d/e/1FAIpQLScpZX8XHrI2ALrBkGtp7rwfheezWrXC_kqEyjfHz8F--hHWiQ/viewform?usp=header)
+- **📦 Material complementar dos estudos de avaliação:** [material-complementar/](material-complementar/) (documentos anonimizados, conjuntos de histórias, *prompt* simples e respostas anonimizadas)
 - **🌐 Aplicação Web (Streamlit):** [https://use-story-generation.streamlit.app/](https://use-story-generation.streamlit.app/)
 
 ---
